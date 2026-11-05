@@ -61,7 +61,8 @@ const T_OUTRO = 900;
 /* 0 tinta, 1 muro, 2 línea, 3 azul, 4 azul sombra, 5 azul luz,
    6 lima, 7 lima sombra, 8 papel, 9 papel sombra, 10 hueco, 11 metal,
    12 rojo, 13 agua, 14 pluma, 15 pluma clara,
-   16 cima, 17 cielo, 18 orilla, 19 sol. */
+   16 cima, 17 cielo, 18 orilla, 19 sol,
+   20 volcán sombra, 21 volcán luz, 22 volcán punta. */
 const PAL = new Uint8ClampedArray([
   10, 10, 10,
   54, 60, 86,
@@ -82,7 +83,10 @@ const PAL = new Uint8ClampedArray([
   10, 18, 62,
   48, 98, 188,
   255, 168, 114,
-  255, 230, 156
+  255, 230, 156,
+  170, 160, 204,
+  206, 198, 228,
+  234, 228, 244
 ]);
 
 const ORDEN = "ABCDEILNOPRTUV0123456789YZX";
@@ -553,31 +557,38 @@ function arbol(wx, wy) {
   poly(q, 6);
 }
 
-/* Silueta de un volcán: masa oscura, cara clara y contorno. */
-function volcan(pts, luz) {
+/* Lejos y claros: sombra, cara de luz y punta. El contorno va al final. */
+function volcan(pts, luz, punta) {
   const o = [];
   for (let i = 0; i < pts.length; i += 2) o.push(camX(pts[i]), camY(pts[i + 1]));
-  solido(o, 10, 0);
+  poly(o, 20);
   const q = [];
   for (let i = 0; i < luz.length; i += 2) q.push(camX(luz[i]), camY(luz[i + 1]));
-  poly(q, 1);
+  poly(q, 21);
+  const t = [];
+  for (let i = 0; i < punta.length; i += 2) t.push(camX(punta[i]), camY(punta[i + 1]));
+  poly(t, 22);
+  borde(o, 0);
 }
 
-/* Tres perfiles distintos, quietos, de pie en el horizonte. */
+/* Solo la franja baja del cielo. El más alto no llega a un cuarto. */
 function volcanes() {
-  const b = HOR + 10;
+  const b = HOR + 4;
   rectMundo(-60, HOR - 1, 320, 150, 10);
   volcan(
-    [-22, b, 14, b - 62, 40, b - 84, 62, b - 54, 98, b],
-    [-2, b - 8, 18, b - 50, 34, b - 72, 14, b - 12]
+    [48, b, 74, b - 20, 98, b - 44, 120, b - 18, 146, b],
+    [60, b - 4, 78, b - 18, 96, b - 38, 74, b - 4],
+    [88, b - 28, 98, b - 44, 106, b - 26]
   );
   volcan(
-    [96, b, 128, b - 74, 156, b - 112, 198, b],
-    [112, b - 10, 134, b - 64, 150, b - 98, 122, b - 14]
+    [-18, b, 4, b - 14, 26, b - 28, 46, b - 12, 68, b],
+    [-6, b - 3, 8, b - 12, 24, b - 24, 12, b - 3],
+    [18, b - 18, 26, b - 28, 32, b - 16]
   );
   volcan(
-    [20, b + 2, 62, b - 112, 76, b - 148, 100, b - 140, 122, b - 102, 166, b + 2],
-    [34, b - 12, 64, b - 96, 74, b - 132, 48, b - 18]
+    [116, b, 138, b - 16, 158, b - 36, 176, b - 14, 198, b],
+    [126, b - 3, 142, b - 14, 156, b - 32, 138, b - 3],
+    [150, b - 24, 158, b - 36, 164, b - 22]
   );
 }
 
