@@ -1,0 +1,1883 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0A0A0A">
+<title>CAZA</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #0A0A0A;
+    overflow: hidden;
+    touch-action: none;
+    overscroll-behavior: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+  body {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  canvas {
+    touch-action: none;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    cursor: crosshair;
+  }
+</style>
+</head>
+<body>
+<canvas id="v"></canvas>
+<script>
+"use strict";
+
+/* CAZA — escopeta de bomba.
+   1. Descanso: de lado, bajada, en la esquina. No tapa el campo.
+   2. Apuntar es voltearla a tres cuartos y subirla al centro-abajo.
+   3. Ahí se queda. No sigue al dedo. Culatazo, bomba, y la misma pose.
+   4. La mira es el punto de metal. Toque, Espacio o Enter.
+   5. Al cerrar la ronda gira al perfil y baja. 4 vidas.
+   Pájaro, perro y escopeta son dibujos propios. */
+
+const W = 180;
+const H = 320;
+const CX = 90;
+/* Punto de la mira: quieto, al final del cañón. */
+const MIRA_X = CX;
+const MIRA_Y = 226;
+const T_DESCANSO = 1000;
+const T_INTRO = 1040;
+const T_OUTRO = 900;
+
+/* 0 tinta, 1 muro, 2 línea, 3 azul, 4 azul sombra, 5 azul luz,
+   6 lima, 7 lima sombra, 8 papel, 9 papel sombra, 10 hueco, 11 metal,
+   12 rojo, 13 agua, 14 pluma, 15 pluma clara,
+   16 cima, 17 cielo, 18 orilla, 19 sol,
+   20 volcán sombra, 21 volcán luz, 22 volcán punta,
+   23 verde sombra, 24 verde, 25 verde luz,
+   26 corteza sombra, 27 corteza, 28 corteza luz,
+   29 prado, 30 prado luz, 31 tierra, 32 tierra sombra,
+   33-35 noche, 36-39 ocaso, 40 luna, 41 sombra de luna,
+   42 metal claro, 43 metal oscuro, 44 manga, 45 piel,
+   46 gorra, 47 gorra clara, 48 latón. */
+const PAL = new Uint8ClampedArray([
+  10, 10, 10,
+  54, 60, 86,
+  186, 194, 224,
+  43, 53, 255,
+  16, 22, 120,
+  162, 168, 255,
+  215, 255, 58,
+  88, 114, 12,
+  247, 247, 242,
+  150, 152, 144,
+  18, 22, 40,
+  78, 84, 112,
+  255, 59, 92,
+  12, 156, 186,
+  224, 150, 42,
+  255, 214, 156,
+  10, 18, 62,
+  48, 98, 188,
+  255, 168, 114,
+  255, 230, 156,
+  170, 160, 204,
+  206, 198, 228,
+  234, 228, 244,
+  22, 104, 56,
+  58, 156, 72,
+  118, 204, 96,
+  96, 36, 28,
+  154, 64, 36,
+  214, 128, 72,
+  78, 108, 54,
+  132, 148, 72,
+  176, 108, 60,
+  112, 64, 36,
+  8, 10, 36,
+  16, 22, 78,
+  28, 36, 102,
+  42, 24, 78,
+  112, 42, 78,
+  196, 78, 52,
+  244, 128, 62,
+  236, 238, 220,
+  150, 158, 186,
+  176, 186, 206,
+  36, 40, 58,
+  188, 84, 46,
+  222, 170, 128,
+  42, 78, 48,
+  92, 138, 78,
+  212, 176, 86
+]);
+
+const ORDEN = "ABCDEILNOPRTUV0123456789YZX";
+const BITS = [
+  0x699F99, 0xE9E99E, 0x698896, 0xE9999E, 0xF8E88F, 0xF4444F, 0x88888F,
+  0x9DB999, 0x699996, 0xE99E88, 0xE99EA9, 0xF44444, 0x999996, 0x999964,
+  0x69BD96, 0x4C444E, 0x69124F, 0xE16196, 0x26AF22, 0xF8E196, 0x68E996,
+  0xF12444, 0x696996, 0x699716, 0x996222, 0xF1248F, 0x996699
+];
+
+/* Horizonte cerca del tercio alto: mucho cielo y un campo ancho debajo. */
+const HOR = 126;
+const FAR_Y = 188;
+const MID_Y = 236;
+const FRONT_Y = 286;
+
+const idx = new Uint8Array(W * H);
+const vista = document.getElementById("v");
+const interno = document.createElement("canvas");
+interno.width = W;
+interno.height = H;
+const ctxInterno = interno.getContext("2d", { alpha: false });
+const imagen = ctxInterno.createImageData(W, H);
+const pixeles = imagen.data;
+let ctxVista = vista.getContext("2d", { alpha: false });
+let escalaPrev = 0;
+let dprPrev = 0;
+let seg = 0;
+let antes = 0;
+let ac = null;
+let master = null;
+let ruido = null;
+let pausa = 0;
+/* Punto de la mira ya en pantalla, para pintarlo encima de los patos. */
+let miraPunta = null;
+
+const cam = { z: 1, fx: 0, fy: 0, ax: 0, ay: 0, sx: 0, sy: 0 };
+const scroll = { lejos: 0, medio: 0, frente: 0, nube: 0, colina: 0, alta: 0 };
+const patos = [];
+const plumas = [];
+const anillos = [];
+
+const S = {
+  modo: "titulo",
+  t: 0,
+  juegoT: 0,
+  vidas: 4,
+  ronda: 0,
+  puntos: 0,
+  racha: 0,
+  balas: 0,
+  balasMax: 0,
+  resultado: "",
+  retroceso: 0,
+  fogonazo: 0,
+  bombeo: 0,
+  flashRojo: 0,
+  pop: 0,
+  marcaBien: 0,
+  limite: 8000
+};
+
+function px(x, y, c) {
+  x |= 0;
+  y |= 0;
+  if (x < 0 || y < 0 || x >= W || y >= H) return;
+  idx[y * W + x] = c;
+}
+
+function lleno(x, y, w, h, c) {
+  x |= 0;
+  y |= 0;
+  w |= 0;
+  h |= 0;
+  if (w <= 0 || h <= 0) return;
+  let x0 = x < 0 ? 0 : x;
+  let y0 = y < 0 ? 0 : y;
+  let x1 = x + w;
+  let y1 = y + h;
+  if (x1 > W) x1 = W;
+  if (y1 > H) y1 = H;
+  if (x1 <= x0 || y1 <= y0) return;
+  for (let yy = y0; yy < y1; yy++) idx.fill(c, yy * W + x0, yy * W + x1);
+}
+
+function marco(x, y, w, h, c) {
+  lleno(x, y, w, 1, c);
+  lleno(x, y + h - 1, w, 1, c);
+  lleno(x, y, 1, h, c);
+  lleno(x + w - 1, y, 1, h, c);
+}
+
+function linea(x0, y0, x1, y1, c) {
+  x0 |= 0;
+  y0 |= 0;
+  x1 |= 0;
+  y1 |= 0;
+  let dx = Math.abs(x1 - x0);
+  let dy = Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1;
+  const sy = y0 < y1 ? 1 : -1;
+  let e = dx - dy;
+  for (;;) {
+    px(x0, y0, c);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = e << 1;
+    if (e2 > -dy) { e -= dy; x0 += sx; }
+    if (e2 < dx) { e += dx; y0 += sy; }
+  }
+}
+
+function poly(pts, c) {
+  const n = pts.length >> 1;
+  if (n < 3) return;
+  let y0 = 999;
+  let y1 = -999;
+  for (let i = 0; i < n; i++) {
+    const y = pts[i * 2 + 1];
+    if (y < y0) y0 = y;
+    if (y > y1) y1 = y;
+  }
+  y0 = y0 < 0 ? 0 : y0 | 0;
+  y1 = y1 >= H ? H - 1 : y1 | 0;
+  for (let y = y0; y <= y1; y++) {
+    let xL = 999;
+    let xR = -999;
+    let hit = 0;
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      let yA = pts[i * 2 + 1];
+      let yB = pts[j * 2 + 1];
+      let xA = pts[i * 2];
+      let xB = pts[j * 2];
+      if (yA === yB) continue;
+      if (yA > yB) {
+        const ty = yA; yA = yB; yB = ty;
+        const tx = xA; xA = xB; xB = tx;
+      }
+      if (y < yA || y >= yB) continue;
+      const x = xA + (xB - xA) * ((y - yA) / (yB - yA));
+      if (x < xL) xL = x;
+      if (x > xR) xR = x;
+      hit++;
+    }
+    if (hit < 2) continue;
+    let a = xL | 0;
+    let b = xR | 0;
+    if (a < 0) a = 0;
+    if (b >= W) b = W - 1;
+    if (b >= a) idx.fill(c, y * W + a, y * W + b + 1);
+  }
+}
+
+function borde(pts, c) {
+  const n = pts.length >> 1;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    linea(pts[i * 2], pts[i * 2 + 1], pts[j * 2], pts[j * 2 + 1], c);
+  }
+}
+
+function solido(pts, fill, ink) {
+  poly(pts, fill);
+  if (ink >= 0) borde(pts, ink);
+}
+
+function elipse(cx, cy, rx, ry, c) {
+  if (rx < 0.5 || ry < 0.5) return;
+  const y1 = Math.ceil(ry);
+  const ry2 = ry * ry;
+  for (let y = -y1; y <= y1; y++) {
+    const t = 1 - (y * y) / ry2;
+    if (t <= 0) continue;
+    const ww = Math.sqrt(t) * rx;
+    const yy = (cy + y) | 0;
+    if (yy < 0 || yy >= H) continue;
+    let x0 = (cx - ww) | 0;
+    let x1 = (cx + ww) | 0;
+    if (x0 < 0) x0 = 0;
+    if (x1 >= W) x1 = W - 1;
+    if (x1 >= x0) idx.fill(c, yy * W + x0, yy * W + x1 + 1);
+  }
+}
+
+function ovalo(cx, cy, rx, ry, ang, fill, ink) {
+  if (rx < 0.7 || ry < 0.7) return;
+  const pasos = rx + ry < 8 ? 8 : 12;
+  const co = Math.cos(ang);
+  const si = Math.sin(ang);
+  const pts = [];
+  for (let i = 0; i < pasos; i++) {
+    const a = (i / pasos) * Math.PI * 2;
+    const lx = Math.cos(a) * rx;
+    const ly = Math.sin(a) * ry;
+    pts.push(cx + lx * co - ly * si, cy + lx * si + ly * co);
+  }
+  poly(pts, fill);
+  if (ink >= 0) borde(pts, ink);
+}
+
+function anillo(cx, cy, rx, ry, c, g) {
+  if (rx < 1 || ry < 1) return;
+  const pasos = (Math.max(rx, ry) * 6) | 0;
+  const gr = g < 1 ? 1 : g;
+  for (let i = 0; i < pasos; i++) {
+    const a = (i / pasos) * Math.PI * 2;
+    const co = Math.cos(a);
+    const si = Math.sin(a);
+    for (let k = 0; k < gr; k++) {
+      px(cx + co * (rx - k), cy + si * (ry - k * (ry / Math.max(rx, 1))), c);
+    }
+  }
+}
+
+/* Aro macizo. El hueco deja ver el campo. */
+function aro(cx, cy, ri, ro, c) {
+  const o2 = ro * ro;
+  const i2 = ri * ri;
+  const y1 = Math.ceil(ro);
+  for (let y = -y1; y <= y1; y++) {
+    const yy = (cy + y) | 0;
+    if (yy < 0 || yy >= H) continue;
+    const fila = yy * W;
+    for (let x = -y1; x <= y1; x++) {
+      const d = x * x + y * y;
+      if (d > o2 || d < i2) continue;
+      const xx = (cx + x) | 0;
+      if (xx >= 0 && xx < W) idx[fila + xx] = c;
+    }
+  }
+}
+
+function arco(cx, cy, r, a0, a1, c) {
+  const pasos = 18;
+  for (let i = 0; i <= pasos; i++) {
+    const a = a0 + (a1 - a0) * (i / pasos);
+    px(cx + Math.cos(a) * r, cy + Math.sin(a) * r, c);
+    px(cx + Math.cos(a) * (r - 1), cy + Math.sin(a) * (r - 1), c);
+  }
+}
+
+function texto(s, x, y, sc, c, sombra) {
+  if (sombra) texto(s, x + sc, y + sc, sc, 0, false);
+  for (let i = 0; i < s.length; i++) {
+    const k = ORDEN.indexOf(s.charAt(i));
+    if (k < 0) continue;
+    const g = BITS[k];
+    const ox = x + i * 5 * sc;
+    for (let row = 0; row < 6; row++) {
+      const bits = (g >> ((5 - row) * 4)) & 15;
+      for (let col = 0; col < 4; col++) {
+        if (bits & (8 >> col)) lleno(ox + col * sc, y + row * sc, sc, sc, c);
+      }
+    }
+  }
+}
+
+function anchoTexto(s, sc) {
+  return s.length * 5 * sc - sc;
+}
+
+function centroTexto(s, y, sc, c) {
+  texto(s, (W - anchoTexto(s, sc)) >> 1, y, sc, c, true);
+}
+
+function grito(s, y, sc, letra, bordeC, fondo) {
+  const w = anchoTexto(s, sc);
+  const x = (W - w) >> 1;
+  const h = 6 * sc;
+  lleno(x - 5, y - 4, w + 10, h + 8, fondo);
+  marco(x - 5, y - 4, w + 10, h + 8, bordeC);
+  texto(s, x, y, sc, letra, false);
+}
+
+function suave(u) {
+  if (u < 0) return 0;
+  if (u > 1) return 1;
+  return u * u * (3 - 2 * u);
+}
+
+function factorZoom() {
+  if (S.modo === "intro") return S.t / T_INTRO;
+  if (S.modo === "juego") return 1;
+  if (S.modo === "outro") return 1 - S.t / T_OUTRO;
+  return 0;
+}
+
+/* El campo no se acerca ni tiembla. La escopeta gira, sube, y al cerrar vuelve. */
+function cuadroCamara() {
+  const k = factorZoom();
+  const e = suave(k);
+  cam.z = 1;
+  cam.fx = 0;
+  cam.fy = 0;
+  cam.ax = 0;
+  cam.ay = 0;
+  cam.sx = 0;
+  cam.sy = 0;
+  return { e: e, k: k };
+}
+
+function camX(wx) {
+  return (wx - cam.fx) * cam.z + cam.ax + cam.sx;
+}
+
+function camY(wy) {
+  return (wy - cam.fy) * cam.z + cam.ay + cam.sy;
+}
+
+function rectMundo(wx, wy, ww, wh, c) {
+  lleno(camX(wx), camY(wy), Math.max(1, ww * cam.z), Math.max(1, wh * cam.z), c);
+}
+
+function cada(despl, espacio, fn) {
+  const origen = Math.floor(despl / espacio);
+  const frac = despl - origen * espacio;
+  const i1 = Math.ceil(240 / espacio) + 2;
+  for (let i = -3; i <= i1; i++) fn(i * espacio + frac, i - origen);
+}
+
+function hash16(id, sal) {
+  const n = (id * 17 + sal) | 0;
+  return ((n % 16) + 16) % 16 / 15;
+}
+
+/* Ráfaga lenta que cruza el campo. La punta se mueve; la base, no. */
+function viento(x, fila) {
+  const onda = Math.sin(seg * 0.38 + x * 0.042 + fila * 1.25);
+  const pulso = 0.78 + 0.22 * Math.sin(seg * 0.12 + fila);
+  const extra = Math.pow(Math.max(0, Math.sin(seg * 0.085 + fila * 0.4)), 2);
+  return onda * pulso * (1.6 + extra * 1.3);
+}
+
+/* Hoja que se dobla en dos masas. La punta es un óvalo, no un pico. */
+function hojaCurva(wx, base, largo, ancho, doblez, sombra, clara, brillo) {
+  if (largo < 6 || ancho < 1.1) return;
+  const z = cam.z;
+  function tramo(xA, yA, xB, yB, grosor, col) {
+    const ax = camX(xA);
+    const ay = camY(yA);
+    const bx = camX(xB);
+    const by = camY(yB);
+    const ang = Math.atan2(by - ay, bx - ax);
+    const medio = Math.hypot(bx - ax, by - ay) * 0.5;
+    const g = grosor * z;
+    ovalo((ax + bx) * 0.5, (ay + by) * 0.5, medio + g * 0.45, g, ang, col, -1);
+  }
+  const x1 = wx + doblez * 0.4;
+  const y1 = base - largo * 0.56;
+  const x2 = wx + doblez;
+  const y2 = base - largo;
+  tramo(wx, base, x1, y1, ancho + 1 / z, 0);
+  tramo(x1, y1, x2, y2, ancho * 0.9 + 1 / z, 0);
+  tramo(wx, base, x1, y1, ancho, sombra);
+  tramo(x1, y1, x2, y2, ancho * 0.9, sombra);
+  tramo(wx - ancho * 0.16, base, x1 - ancho * 0.12, y1, ancho * 0.46, clara);
+  tramo(x1 - ancho * 0.1, y1, x2 - ancho * 0.08, y2, ancho * 0.4, clara);
+  if (brillo !== clara) tramo(x1, y1, x2, y2, ancho * 0.32, brillo);
+}
+
+/* 0 día, 1 atardecer, 2 noche. El salto es de banda, sin fundido. */
+function faseDia() {
+  if (S.ronda >= 5) return 2;
+  if (S.ronda >= 2) return 1;
+  return 0;
+}
+
+function estrellas() {
+  for (let i = 0; i < 10; i++) {
+    const x = (i * 41 + 8) % 188 - 6;
+    const y = 6 + (i * 19) % 62;
+    if (x > 112 && x < 154 && y < 52) continue;
+    if ((((seg * 1.7) | 0) + i) % 6 === 0) continue;
+    px(camX(x), camY(y), i % 4 === 0 ? 8 : 2);
+  }
+}
+
+/* Mismas franjas. El sol baja con la ronda; de noche entra la luna. */
+function cielo() {
+  const f = faseDia();
+  const b = f === 1
+    ? [36, 37, 38, 39, 18, 14]
+    : f === 2
+    ? [33, 34, 35, 16, 34, 10]
+    : [16, 4, 17, 5, 15, 18];
+  rectMundo(-70, 0, 320, 18, b[0]);
+  rectMundo(-70, 16, 320, 20, b[1]);
+  rectMundo(-70, 34, 320, 24, b[2]);
+  rectMundo(-70, 56, 320, 24, b[3]);
+  rectMundo(-70, 78, 320, 22, b[4]);
+  rectMundo(-70, 98, 320, HOR - 96, b[5]);
+  const s = cam.z;
+  if (f === 2) {
+    const x = camX(132);
+    const y = camY(34 + Math.sin(seg * 0.22) * 1.2);
+    elipse(x, y, 10 * s, 10 * s, 41);
+    elipse(x - 2 * s, y - 1 * s, 8 * s, 8 * s, 40);
+    elipse(x - 4 * s, y - 2.5 * s, 3 * s, 2.4 * s, 8);
+    estrellas();
+    return;
+  }
+  const baja = Math.min(S.ronda, 4) * 15;
+  const x = camX(46);
+  const y = camY(46 + baja + Math.sin(seg * 0.28) * (f === 0 ? 1 : 0.35));
+  elipse(x, y, 26 * s, 26 * s, f === 1 ? 18 : 15);
+  elipse(x, y, 14 * s, 14 * s, 19);
+  elipse(x - 3 * s, y - 3 * s, 6 * s, 6 * s, 8);
+}
+
+/* Masa convexa: papel, sombra y contorno de 1 px. Escala con la cámara. */
+function nube(wx, wy, r) {
+  const x = camX(wx);
+  const y = camY(wy);
+  const a = r * cam.z;
+  const f = faseDia();
+  const clara = f === 2 ? 2 : 8;
+  const sombra = f === 2 ? 9 : f === 1 ? 15 : 2;
+  solido([
+    x - a, y + a * 0.08,
+    x - a * 0.55, y - a * 0.34,
+    x - a * 0.05, y - a * 0.5,
+    x + a * 0.42, y - a * 0.3,
+    x + a, y + a * 0.06,
+    x + a * 0.4, y + a * 0.32,
+    x - a * 0.38, y + a * 0.3
+  ], clara, 0);
+  poly([
+    x - a * 0.72, y + a * 0.06,
+    x - a * 0.1, y + a * 0.02,
+    x + a * 0.55, y + a * 0.08,
+    x + a * 0.38, y + a * 0.28,
+    x - a * 0.32, y + a * 0.26
+  ], sombra);
+}
+
+function capaNube(datos, vel) {
+  const periodo = 300;
+  for (let i = 0; i < datos.length; i++) {
+    const d = datos[i];
+    let x = d[0] + vel * d[3];
+    x = ((x % periodo) + periodo) % periodo - 56;
+    const y = d[1] + Math.sin(seg * 0.33 + i * 1.4) * 1.3;
+    nube(x, y, d[2]);
+  }
+}
+
+function nubesLejos() {
+  capaNube([
+    [24, 14, 22, 0.65],
+    [150, 22, 17, 0.9],
+    [250, 12, 19, 1.05]
+  ], scroll.colina);
+}
+
+function nubesCerca() {
+  capaNube([
+    [70, 52, 30, 0.8],
+    [210, 42, 24, 1.2]
+  ], scroll.nube);
+}
+
+/* Tercer grupo, alto y más lento. No baja al cartel. */
+function nubesAltas() {
+  capaNube([
+    [96, 7, 12, 0.45],
+    [188, 5, 10, 0.6],
+    [270, 9, 11, 0.35]
+  ], scroll.alta);
+}
+
+/* Cuerpo, cola y ala en dos poses. De día queda igual; de noche se aclara. */
+function ave(wx, wy, esc, arriba, dir, ang, tinte) {
+  const z = esc * cam.z;
+  const rumbo = dir < 0 ? ang + Math.PI : ang;
+  function tono(c) {
+    if (tinte === 1) {
+      if (c === 0 || c === 1 || c === 14) return 6;
+      if (c === 9) return 8;
+      return c;
+    }
+    if (tinte === 2) {
+      if (c === 0 || c === 1 || c === 14) return 12;
+      if (c === 9) return 8;
+      return c;
+    }
+    if (faseDia() === 2) {
+      if (c === 0) return 2;
+      if (c === 1) return 9;
+    }
+    return c;
+  }
+  function P(lx, ly) {
+    const gx = lx * esc * dir;
+    const gy = ly * esc;
+    const co = Math.cos(ang);
+    const si = Math.sin(ang);
+    return [camX(wx + gx * co - gy * si), camY(wy + gx * si + gy * co)];
+  }
+  function pts(lista) {
+    const o = [];
+    for (let i = 0; i < lista.length; i += 2) {
+      const q = P(lista[i], lista[i + 1]);
+      o.push(q[0], q[1]);
+    }
+    return o;
+  }
+  function bola(lx, ly, rx, ry, c) {
+    const q = P(lx, ly);
+    const col = tono(c);
+    if (ang) ovalo(q[0], q[1], rx * z, ry * z, rumbo, col, -1);
+    else elipse(q[0], q[1], rx * z, ry * z, col);
+  }
+  poly(pts([-2.0, -1.35, -8.8, -3.5, -7.2, -0.35, -2.2, 0.2]), tono(0));
+  poly(pts([-2.0, 0.25, -8.5, 3.4, -7.0, 0.45, -2.2, 1.25]), tono(0));
+  if (arriba) solido(pts([2.2, -1.7, 1.3, -8.6, -2.7, -7.5, -2.1, -1.15]), tono(1), 0);
+  else solido(pts([2.2, 1.5, 1.3, 8.4, -2.7, 7.3, -2.1, 1.05]), tono(1), 0);
+  bola(0.15, 0.15, 4.2, 2.45, 0);
+  bola(0.5, 1.0, 2.25, 1.1, 9);
+  bola(3.45, -1.2, 2.15, 1.8, 0);
+  bola(6.75, -0.75, 2.05, 1.15, 0);
+  bola(6.6, -0.85, 1.35, 0.62, 14);
+  const ojo = P(4.05, -1.6);
+  px(ojo[0], ojo[1], tono(8));
+  if (arriba) poly(pts([0.85, -2.9, 0.45, -7.0, -1.45, -6.3, -1.05, -2.7]), tono(8));
+  else poly(pts([0.85, 2.7, 0.45, 6.8, -1.45, 6.1, -1.05, 2.5]), tono(8));
+}
+
+function pajaro(wx, wy, esc, arriba, dir) {
+  ave(wx, wy, esc, arriba, dir, 0, 0);
+}
+
+/* Cuatro, lejos y a distintas alturas. El cuerpo queda bajo el sol. */
+function pajaros() {
+  const banda = [
+    [16, 72, 1.05, 7.4, 0.3, 1, 5.5],
+    [90, 84, 0.96, 8.2, 2.2, -1, 9.2],
+    [164, 78, 1.14, 6.7, 1.15, 1, 4.3],
+    [238, 90, 1.02, 7.9, 3.4, -1, 7.7]
+  ];
+  const ciclo = 276;
+  for (let i = 0; i < banda.length; i++) {
+    const d = banda[i];
+    let x = d[0] + seg * d[3] * d[5];
+    x = ((x % ciclo) + ciclo) % ciclo - 42;
+    let y = d[1] + Math.sin(seg * 0.3 + d[4]) * 1.1;
+    const dx = x - 46;
+    const rr = 40 * 40 - dx * dx;
+    if (rr > 0) {
+      const piso = 46 + Math.sqrt(rr);
+      if (y < piso) y = piso;
+    }
+    if (y > 91) y = 91;
+    pajaro(x, y, d[2], Math.sin(seg * d[6] + d[4]) >= 0, d[5]);
+  }
+}
+
+function polen() {
+  for (let i = 0; i < 7; i++) {
+    const dir = (i & 1) ? 1 : -1;
+    const sp = 14 + (i % 3) * 6;
+    const x = ((i * 31 + seg * sp * dir) % 230 + 230) % 230 - 24;
+    const y = 36 + (i * 8) % 28;
+    px(camX(x), camY(y), i & 1 ? 8 : 2);
+  }
+}
+
+/* Tramo de corteza. gb y gc son el medio ancho abajo y arriba. */
+function tramo(x0, y0, x1, y1, gb, gc) {
+  const o = [
+    camX(x0 - gb), camY(y0),
+    camX(x0 + gb * 0.9), camY(y0),
+    camX(x1 + gc * 0.9), camY(y1),
+    camX(x1 - gc), camY(y1)
+  ];
+  poly(o, 27);
+  poly([
+    camX(x0 + gb * 0.08), camY(y0),
+    camX(x0 + gb * 0.86), camY(y0),
+    camX(x1 + gc * 0.86), camY(y1),
+    camX(x1 + gc * 0.08), camY(y1)
+  ], 26);
+  poly([
+    camX(x0 - gb * 0.7), camY(y0),
+    camX(x0 - gb * 0.32), camY(y0),
+    camX(x1 - gc * 0.26), camY(y1),
+    camX(x1 - gc * 0.6), camY(y1)
+  ], 28);
+  borde(o, 0);
+}
+
+/* Una masa: sombra abajo, brillo arriba a la izquierda, contorno de 1 px. */
+function bulto(cx, cy, rx, ry, s, base) {
+  const ancla = base || 0;
+  const lomo = [
+    0.02, -1.08,
+    0.4, -0.74,
+    0.82, -0.38,
+    1.04, 0.04,
+    0.68, 0.26,
+    0.22, 0.12,
+    -0.12, 0.36,
+    -0.5, 0.52,
+    -0.82, 0.18,
+    -1.08, -0.14,
+    -0.7, -0.6,
+    -0.26, -0.96
+  ];
+  function forma(escala, dy, dx) {
+    const o = [];
+    for (let i = 0; i < lomo.length; i += 2) {
+      const nx = lomo[i];
+      const ny = lomo[i + 1];
+      o.push(
+        camX(cx + nx * rx * escala + dx + ancla + s * Math.max(0, -ny)),
+        camY(cy + ny * ry * escala + dy)
+      );
+    }
+    return o;
+  }
+  const o = forma(1, 0, 0);
+  poly(o, 23);
+  poly(forma(0.74, -ry * 0.2, -rx * 0.1), 24);
+  poly(forma(0.34, -ry * 0.52, -rx * 0.24), 25);
+  borde(o, 0);
+}
+
+/* Un solo tronco que afina, pie ancho, dos ramas y una copa. */
+function arbol(x, pie, esc, fila) {
+  const s = viento(x, fila);
+  const z = cam.z;
+  const alto = 98 * esc;
+  const cima = pie - alto;
+  const flex = s * 1.05 * esc;
+  const medio = pie - alto * 0.5;
+  elipse(camX(x - 6 * esc), camY(pie + 6.5 * esc), 22 * esc * z, 4.2 * esc * z, 23);
+  const o = [
+    camX(x - 15 * esc), camY(pie + 1.3 * esc),
+    camX(x - 9.2 * esc), camY(pie - 5 * esc),
+    camX(x - 6.6 * esc), camY(pie - 16 * esc),
+    camX(x - 4.4 * esc + flex * 0.28), camY(medio),
+    camX(x - 2.4 * esc + flex), camY(cima),
+    camX(x + 2.2 * esc + flex), camY(cima),
+    camX(x + 3.5 * esc + flex * 0.28), camY(medio),
+    camX(x + 5.4 * esc), camY(pie - 16 * esc),
+    camX(x + 8.6 * esc), camY(pie - 4 * esc),
+    camX(x + 13.4 * esc), camY(pie + 1.3 * esc)
+  ];
+  poly(o, 27);
+  poly([
+    camX(x + 0.8 * esc + flex * 0.15), camY(pie - 18 * esc),
+    camX(x + 0.2 * esc + flex), camY(cima + 3 * esc),
+    camX(x + 2 * esc + flex), camY(cima + 2 * esc),
+    camX(x + 3.2 * esc + flex * 0.25), camY(medio),
+    camX(x + 5 * esc), camY(pie - 16 * esc),
+    camX(x + 7.4 * esc), camY(pie - 6 * esc),
+    camX(x + 3.6 * esc), camY(pie - 10 * esc)
+  ], 26);
+  poly([
+    camX(x - 12.2 * esc), camY(pie - 0.4 * esc),
+    camX(x - 7.8 * esc), camY(pie - 13 * esc),
+    camX(x - 4.6 * esc + flex * 0.22), camY(medio + 2 * esc),
+    camX(x - 2.2 * esc + flex), camY(cima + 4 * esc),
+    camX(x - 0.2 * esc + flex * 0.8), camY(cima + 8 * esc),
+    camX(x - 2.8 * esc + flex * 0.2), camY(medio + 4 * esc),
+    camX(x - 5.4 * esc), camY(pie - 14 * esc),
+    camX(x - 8.6 * esc), camY(pie - 1.2 * esc)
+  ], 28);
+  borde(o, 0);
+  const sale = cima + 24 * esc;
+  tramo(x + flex * 0.1, sale, x - 15 * esc + flex * 0.35, cima + 15 * esc, 2.25 * esc, 1.15 * esc);
+  tramo(x + flex * 0.12, sale + 1.5 * esc, x + 14 * esc + flex * 0.28, cima + 16 * esc, 2.05 * esc, 1.05 * esc);
+  copaArbol(x + flex * 0.12, cima + 2 * esc, esc, flex, s * 0.32);
+}
+
+/* Copas solapadas en una masa: sombra abajo, brillo arriba, contorno de 1 px. */
+function copaArbol(cx, cy, esc, flex, s) {
+  const z = cam.z;
+  function sitio(dx, dy) {
+    const peso = Math.max(0, -dy / 12);
+    return [
+      camX(cx + dx * esc + flex + s * peso),
+      camY(cy + dy * esc)
+    ];
+  }
+  function bola(dx, dy, rx, ry, c, borde) {
+    const q = sitio(dx, dy);
+    const extra = borde ? 1 : 0;
+    elipse(q[0], q[1], rx * esc * z + extra, ry * esc * z + extra, c);
+  }
+  const masa = [
+    [-10, 3.2, 10.2, 6.2],
+    [11, 3.6, 9.4, 5.8],
+    [0, 4.2, 11.2, 5.4],
+    [-4, -1.2, 10.4, 8],
+    [6, -0.4, 9.2, 7],
+    [0, -5, 11, 8.4]
+  ];
+  for (let i = 0; i < masa.length; i++) {
+    const m = masa[i];
+    bola(m[0], m[1], m[2], m[3], 0, true);
+  }
+  bola(-10, 3.2, 10.2, 6.2, 23, false);
+  bola(11, 3.6, 9.4, 5.8, 23, false);
+  bola(0, 4.2, 11.2, 5.4, 23, false);
+  bola(-4, -1.2, 10.4, 8, 24, false);
+  bola(6, -0.4, 9.2, 7, 24, false);
+  bola(0, -5, 11, 8.4, 24, false);
+  bola(-4.2, -7.2, 6.4, 4.2, 25, false);
+  bola(-1.2, -5.4, 3.6, 2.5, 25, false);
+}
+
+/* Lejos, a la izquierda. No llega al cartel ni al centro. */
+function arbolLejos() {
+  arbol(10, 192, 0.48, 1);
+}
+
+/* A la derecha. La copa queda fuera del cartel y de los volcanes. */
+function arbolAlto() {
+  arbol(158, 246, 1, 0);
+}
+
+/* Mata baja: la sombra quieta y la punta con el mismo viento. */
+function mata(x, y, rx, ry, fila) {
+  const s = viento(x, fila) * 0.65;
+  const z = cam.z;
+  elipse(camX(x + rx * 0.06), camY(y + 1), rx * 0.92 * z, Math.max(1.45, ry * 0.32) * z, 23);
+  bulto(x, y - ry * 0.92, rx, ry, s, 0);
+}
+
+function arbustoLejos() {
+  mata(38, 172, 6.2, 4, 1);
+}
+
+function arbusto() {
+  mata(20, 248, 13.2, 8, 3);
+}
+
+/* Tres postes y dos tablas. Tramo corto, a la derecha. */
+function valla() {
+  const xs = [146, 160, 174];
+  const base = 286;
+  const alto = 20;
+  const s = viento(160, 3);
+  const z = cam.z;
+  const puntas = [];
+  for (let i = 0; i < xs.length; i++) {
+    const x = xs[i];
+    const punta = s * (0.16 + i * 0.04);
+    puntas.push(punta);
+    elipse(camX(x), camY(base + 1.2), 3.3 * z, 1.4 * z, 23);
+    tramo(x, base, x + punta, base - alto, 2.05, 1.35);
+  }
+  tabla(xs[0] + puntas[0] * 0.72, base - alto * 0.68, xs[2] + puntas[2] * 0.72, base - alto * 0.72, 2.4);
+  tabla(xs[0] + puntas[0] * 0.32, base - alto * 0.3, xs[2] + puntas[2] * 0.32, base - alto * 0.34, 2.15);
+}
+
+function tabla(x0, y0, x1, y1, grueso) {
+  const o = [
+    camX(x0), camY(y0),
+    camX(x1), camY(y1),
+    camX(x1), camY(y1 + grueso),
+    camX(x0), camY(y0 + grueso)
+  ];
+  poly(o, 27);
+  poly([
+    camX(x0), camY(y0),
+    camX(x1), camY(y1),
+    camX(x1), camY(y1 + grueso * 0.34),
+    camX(x0), camY(y0 + grueso * 0.34)
+  ], 28);
+  poly([
+    camX(x0), camY(y0 + grueso * 0.62),
+    camX(x1), camY(y1 + grueso * 0.62),
+    camX(x1), camY(y1 + grueso),
+    camX(x0), camY(y0 + grueso)
+  ], 26);
+  borde(o, 0);
+}
+
+/* Dos piedras quietas, con sombra, sobre la tierra. */
+function piedra(wx, wy, rx, ry) {
+  const z = cam.z;
+  elipse(camX(wx + rx * 0.12), camY(wy + ry * 0.42), rx * z, ry * 0.42 * z, 10);
+  solido([
+    camX(wx - rx * 0.95), camY(wy + ry * 0.08),
+    camX(wx - rx * 0.32), camY(wy - ry * 0.92),
+    camX(wx + rx * 0.28), camY(wy - ry * 0.62),
+    camX(wx + rx), camY(wy + ry * 0.12),
+    camX(wx + rx * 0.3), camY(wy + ry * 0.42),
+    camX(wx - rx * 0.5), camY(wy + ry * 0.36)
+  ], 9, 0);
+  poly([
+    camX(wx - rx * 0.42), camY(wy - ry * 0.12),
+    camX(wx - rx * 0.02), camY(wy - ry * 0.58),
+    camX(wx + rx * 0.18), camY(wy - ry * 0.22),
+    camX(wx - rx * 0.08), camY(wy + ry * 0.04)
+  ], 8);
+}
+
+function piedras() {
+  piedra(40, 309, 6.4, 4.1);
+  piedra(54, 312, 4.2, 2.9);
+}
+
+/* Lejos y claros: sombra, cara de luz y punta. El contorno va al final. */
+function volcan(pts, luz, punta) {
+  const o = [];
+  for (let i = 0; i < pts.length; i += 2) o.push(camX(pts[i]), camY(pts[i + 1]));
+  poly(o, 20);
+  const q = [];
+  for (let i = 0; i < luz.length; i += 2) q.push(camX(luz[i]), camY(luz[i + 1]));
+  poly(q, 21);
+  const t = [];
+  for (let i = 0; i < punta.length; i += 2) t.push(camX(punta[i]), camY(punta[i + 1]));
+  poly(t, 22);
+  borde(o, 0);
+}
+
+/* Solo la franja baja del cielo. El más alto no llega a un cuarto. */
+function volcanes() {
+  const b = HOR + 2;
+  volcan(
+    [48, b, 74, b - 14, 98, b - 28, 120, b - 12, 146, b],
+    [60, b - 3, 78, b - 12, 96, b - 24, 74, b - 3],
+    [88, b - 18, 98, b - 28, 106, b - 16]
+  );
+  volcan(
+    [-18, b, 4, b - 10, 26, b - 18, 46, b - 8, 68, b],
+    [-6, b - 2, 8, b - 8, 24, b - 16, 12, b - 2],
+    [18, b - 12, 26, b - 18, 32, b - 10]
+  );
+  volcan(
+    [116, b, 138, b - 12, 158, b - 22, 176, b - 10, 198, b],
+    [126, b - 2, 142, b - 10, 156, b - 18, 138, b - 2],
+    [150, b - 14, 158, b - 22, 164, b - 12]
+  );
+}
+
+/* Prado ancho. Sale del marco; las franjas solo miden la distancia. */
+function pradera() {
+  const yA = HOR;
+  const yB = 300;
+  const corte = [0, 0.2, 0.46, 0.74, 1];
+  const tapa = [23, 24, 25, 7];
+  const fre = [29, 23, 24, 23];
+  for (let f = 0; f < 4; f++) {
+    const y0 = yA + (yB - yA) * corte[f];
+    const y1 = yA + (yB - yA) * corte[f + 1];
+    const lip = Math.max(2, (y1 - y0) * 0.16);
+    rectMundo(-60, y0, 300, y1 - y0, tapa[f]);
+    rectMundo(-60, y1 - lip, 300, lip, fre[f]);
+  }
+}
+
+/* Mechón corto: la sombra queda quieta y el viento dobla la masa. */
+function mechon(wx, wy, esc, frente) {
+  const z = cam.z;
+  const doblez = Math.max(-2.6, Math.min(2.6, viento(wx, frente ? 2 : 0)));
+  const rx = 3.6 + esc * 8;
+  const ry = rx * 0.46;
+  elipse(camX(wx + rx * 0.22), camY(wy + 1.2), rx * 0.82 * z, Math.max(1.1, ry * 0.28) * z, frente ? 23 : 29);
+  const x = camX(wx + doblez);
+  const y = camY(wy - ry * 0.7);
+  ovalo(x, y, rx * z, ry * z, 0, frente ? 7 : 23, 0);
+  ovalo(x - rx * 0.16 * z, y - ry * 0.18 * z, rx * 0.58 * z, ry * 0.58 * z, 0, frente ? 6 : 24, -1);
+  if (frente && hash16(wx * 3 | 0, 4) > 0.55) {
+    ovalo(x - rx * 0.26 * z, y - ry * 0.3 * z, rx * 0.2 * z, ry * 0.2 * z, 0, 8, -1);
+  }
+}
+
+/* Abajo pocos y grandes; arriba chicos y con huecos. No es una cuadrícula. */
+function semilla(x, sal) {
+  let n = Math.imul(((x + 512) ^ (sal * 374761393)) | 0, 0x85ebca6b);
+  n = Math.imul(n ^ (n >>> 13), 0xc2b2ae35);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
+}
+
+function sembrar(y, esc, paso, fila, frente) {
+  let x = -36 + semilla(fila, 2) * paso;
+  for (let n = 0; x < 214 && n < 36; n++) {
+    const a = semilla(x | 0, fila * 9 + 1);
+    const b = semilla(x | 0, fila * 9 + 2);
+    const c = semilla(x | 0, fila * 9 + 3);
+    if (a > 0.2) {
+      const e = esc * (0.58 + b * 0.85);
+      const jy = (c - 0.5) * (7 + esc * 12);
+      mechon(x, y + jy, e, frente);
+    }
+    x += paso * (0.5 + a * 0.95);
+  }
+}
+
+/* Dos marrones y unas piedras, al borde de abajo. */
+function tierra() {
+  const y = 300;
+  rectMundo(-60, y, 300, 22, 32);
+  rectMundo(-60, y, 300, 5, 31);
+  rectMundo(-60, y, 300, 1 / cam.z, 0);
+  cada(0, 26, function (x, id) {
+    if (hash16(id, 11) < 0.34) return;
+    const rx = 1.5 + hash16(id, 2) * 1.1;
+    const ry = rx * 0.62;
+    const px0 = x + (hash16(id, 6) - 0.5) * 8;
+    const py = y + 8 + hash16(id, 4) * 6;
+    const z = cam.z;
+    elipse(camX(px0), camY(py), rx * z + 0.7, ry * z + 0.55, 0);
+    elipse(camX(px0), camY(py), rx * z, ry * z, 9);
+    elipse(camX(px0 - rx * 0.28), camY(py - ry * 0.22), rx * 0.38 * z, ry * 0.3 * z, 8);
+  });
+}
+
+/* El blanco es el pájaro del cielo. Lejos, más chico. */
+function pato(wx, wy, s, ala, ang, dir, tinte) {
+  ave(wx, wy, s * 3.25, ala, dir, ang, tinte);
+}
+
+function posPato(p) {
+  const u = (S.juegoT - p.inicio) / p.dur;
+  const x = p.x0 + (p.x1 - p.x0) * u;
+  const y = p.y0 + (p.y1 - p.y0) * u + Math.sin((u - 0.5) * Math.PI * 2) * p.amp;
+  return { x: x, y: y };
+}
+
+function donde(p) {
+  if (p.estado === "golpe" || p.estado === "cae") return { x: p.wx, y: p.wy };
+  const q = posPato(p);
+  if (p.estado === "vuela" || p.estado === "huye") q.y += p.ala ? -1.5 : 1.5;
+  return q;
+}
+
+function dibujarPato(p) {
+  if (p.estado === "espera" || p.estado === "listo") return;
+  const q = donde(p);
+  let s = p.estado === "cae" ? p.s * (1 - Math.min(1, p.t / 360) * 0.35) : p.s;
+  const lejos = Math.max(0, Math.min(1, (96 - q.y) / 80));
+  s *= 1 - lejos * 0.28;
+  if (s < 0.42) s = 0.42;
+  const ang = p.estado === "cae" ? p.ang : 0;
+  pato(q.x, q.y, s, p.ala, ang, p.dir, p.tinte);
+}
+
+function patoLejos(e) {
+  if (e > 0.28) return;
+  const x = ((seg * 16) % 230) - 24;
+  const y = 30 + Math.sin(seg * 1.3) * 2;
+  const ala = ((seg * 5) | 0) & 1;
+  pato(x, y, 0.38, ala, 0, 1, 0);
+}
+
+function dibujarPlumas() {
+  for (let i = 0; i < plumas.length; i++) {
+    const f = plumas[i];
+    const x = camX(f.x) | 0;
+    const y = camY(f.y) | 0;
+    px(x, y, 0);
+    px(x + 1, y, f.c);
+    px(x, y + 1, f.c);
+    px(x + 2, y - 1, f.c);
+  }
+}
+
+/* Cabeza, orejas y hocico. Asoma un instante entre el pasto, a un lado. */
+function perro(wx, wy, dir) {
+  const z = cam.z * 1.15;
+  const wag = Math.sin(seg * 8) * 2.2;
+  function X(lx) { return camX(wx) + lx * dir * z; }
+  function Y(ly) { return camY(wy) + ly * z; }
+  solido([X(-14), Y(2), X(-22), Y(-4 + wag), X(-18), Y(3 + wag * 0.4), X(-8), Y(6)], 9, 0);
+  solido([X(-8), Y(-2), X(7), Y(-5), X(8), Y(12), X(-10), Y(14)], 9, 0);
+  poly([X(-6), Y(-1), X(3), Y(-4), X(4), Y(6), X(-6), Y(7)], 8);
+  solido([X(-8), Y(-6), X(-3), Y(-18), X(1), Y(-7), X(-5), Y(1)], 1, 0);
+  solido([X(0), Y(-8), X(5), Y(-20), X(9), Y(-7), X(3), Y(-1)], 11, 0);
+  poly([X(-6), Y(-7), X(-2), Y(-15), X(0), Y(-7), X(-4), Y(-3)], 9);
+  solido([X(-6), Y(-14), X(5), Y(-17), X(11), Y(-8), X(6), Y(-1), X(-4), Y(-2)], 8, 0);
+  poly([X(-3), Y(-14), X(3), Y(-15), X(7), Y(-9), X(1), Y(-8)], 2);
+  solido([X(6), Y(-8), X(18), Y(-6), X(19), Y(-1), X(7), Y(1)], 9, 0);
+  elipse(X(16), Y(-3.5), 2.1 * z, 1.5 * z, 0);
+  elipse(X(3.2), Y(-11), 1.7 * z, 1.7 * z, 0);
+  px(X(2.6), Y(-11.6), 8);
+}
+
+/* Los patos pasan por delante del cañón. */
+function patosDelante() {
+  for (let i = 0; i < patos.length; i++) {
+    const e = patos[i].estado;
+    if (e === "espera" || e === "listo") continue;
+    dibujarPato(patos[i]);
+  }
+}
+
+function dibujarPerro() {
+  if (S.modo !== "outro" || S.resultado !== "mal") return;
+  const k = (S.t - 480) / 380;
+  if (k <= 0 || k >= 1) return;
+  const pop = Math.sin(k * Math.PI);
+  perro(36, 296 - pop * 30, 1);
+}
+
+/* 0 adelante, 1 a medio camino, 2 atrás del todo. */
+function pasoBomba() {
+  if (S.bombeo <= 0) return 0;
+  const u = 1 - S.bombeo / 480;
+  const k = u < 0.5 ? u * 2 : (1 - u) * 2;
+  if (k < 0.34) return 0;
+  if (k < 0.67) return 1;
+  return 2;
+}
+
+/* Escopeta de bomba, de lado.
+   Descanso: perfil, bajada, en la esquina.
+   Apuntar: gira a tres cuartos (se ve el lomo) y sube al centro-abajo.
+   Quieta en esa pose. No sigue al dedo: solo culatazo y bomba. */
+function mirilla(e) {
+  const giro = e <= 0 ? 0 : e >= 1 ? 1 : e;
+  const esc = 1 + giro * 0.22;
+  const ang = giro * 0.98;
+  const co = Math.cos(ang);
+  const si = Math.sin(ang);
+  const tx = 92 + (MIRA_X - 92) * giro;
+  const ty = 300 + (MIRA_Y - 300) * giro;
+  const bu = 1;
+  const bv = -1;
+  let ox = tx - (bu * esc * co - bv * esc * si);
+  let oy = ty - (bu * esc * si + bv * esc * co);
+  ox += co * S.retroceso;
+  oy += si * S.retroceso;
+
+  const rojo = S.flashRojo > 0 && ((S.flashRojo / 70) | 0) % 2 === 0;
+  const lima = !rojo && S.modo === "juego" && hayZona();
+  const cuenta = rojo ? 12 : lima ? 6 : 48;
+  const corre = pasoBomba() * 4;
+
+  function P(u, v) {
+    const uu = u * esc;
+    const vv = v * esc;
+    return [ox + uu * co - vv * si, oy + uu * si + vv * co];
+  }
+
+  function forma(pts, c, tinta) {
+    const o = [];
+    for (let i = 0; i < pts.length; i += 2) {
+      const p = P(pts[i], pts[i + 1]);
+      o.push(p[0], p[1]);
+    }
+    if (tinta >= 0) solido(o, c, tinta);
+    else poly(o, c);
+  }
+
+  function contorno(pts) {
+    const o = [];
+    for (let i = 0; i < pts.length; i += 2) {
+      const p = P(pts[i], pts[i + 1]);
+      o.push(p[0], p[1]);
+    }
+    borde(o, 0);
+  }
+
+  function arista(pts) {
+    for (let i = 0; i < pts.length - 2; i += 2) {
+      const a = P(pts[i], pts[i + 1]);
+      const b = P(pts[i + 2], pts[i + 3]);
+      linea(a[0], a[1], b[0], b[1], 0);
+    }
+  }
+
+  /* Dos tonos y contorno. Al girar asoma el lomo, el plano de arriba. */
+  function bloque(u, v, w, h, claro, oscuro) {
+    const extr = giro > 0.04 ? giro * 5 : 0;
+    const top = v - extr;
+    if (extr > 0.6) forma([u, top, u + w, top, u + w, v + 0.6, u, v + 0.6], claro, -1);
+    const vm = v + h * 0.5;
+    forma([u, v, u + w, v, u + w, vm + 0.6, u, vm + 0.6], claro, -1);
+    forma([u, vm - 0.2, u + w, vm - 0.2, u + w, v + h, u, v + h], oscuro, -1);
+    if (extr > 0.6) arista([u, v, u + w, v]);
+    contorno([u, top, u + w, top, u + w, v + h, u, v + h]);
+  }
+
+  /* Culata: lomo, talón y puntera. */
+  const extr = giro > 0.04 ? giro * 5 : 0;
+  if (extr > 0.6) {
+    forma([
+      48, 4 - extr, 62, 1 - extr, 74, 3 - extr,
+      74, 3, 62, 1, 48, 4
+    ], 28, -1);
+  }
+  forma([48, 4, 62, 1, 74, 3, 74, 13, 60, 16, 50, 11], 26, -1);
+  forma([48, 4, 62, 1, 74, 3, 70, 7, 58, 5, 48, 7], 28, -1);
+  if (extr > 0.6) arista([48, 4, 62, 1, 74, 3]);
+  contorno(extr > 0.6
+    ? [48, 4 - extr, 62, 1 - extr, 74, 3 - extr, 74, 13, 60, 16, 50, 11]
+    : [48, 4, 62, 1, 74, 3, 74, 13, 60, 16, 50, 11]);
+  bloque(74, 2, 4, 12, 42, 43);
+
+  /* Guardamonte. */
+  forma([44, 11, 54, 11, 52, 13, 47, 16, 44, 13], 43, 0);
+
+  /* Cajón y portillo. */
+  bloque(40, 2, 14, 11, 42, 43);
+  forma([44, 5, 51, 5, 51, 8, 44, 8], 0, -1);
+
+  /* Guardamanos, fijo, delante del cajón. */
+  bloque(30, 4, 11, 9, 28, 26);
+  arista([32, 7, 39, 7]);
+  arista([32, 9, 39, 9]);
+  arista([32, 11, 39, 11]);
+
+  /* Tubo bajo el cañón. */
+  bloque(8, 7, 28, 3, 42, 43);
+
+  /* Un cañón. El claro es el lomo; lo oscuro, el costado. */
+  bloque(5, 2, 40, 5, 42, 43);
+
+  /* Bomba: corre hacia la culata y vuelve a su sitio. */
+  const pu = 12 + corre;
+  bloque(pu, 5, 14, 8, 28, 26);
+  bloque(pu, 5, 2, 8, 42, 43);
+  bloque(pu + 12, 5, 2, 8, 43, 43);
+  arista([pu + 3, 8, pu + 11, 8]);
+  arista([pu + 3, 10, pu + 11, 10]);
+
+  /* Boca y poste del punto. */
+  bloque(2, 1, 5, 7, 42, 43);
+  bloque(0, 0, 2, 3, 42, 43);
+
+  const punta = P(bu, bv);
+  miraPunta = { x: punta[0], y: punta[1], c: cuenta };
+
+  if (S.fogonazo > 0) {
+    forma([-14, 1, -1, 1, -1, 8, -14, 8], 19, -1);
+    forma([-9, 2, -2, 2, -2, 7, -9, 7], 8, -1);
+    forma([-18, 3, -12, 3, -12, 6, -18, 6], 39, -1);
+    const chispa = P(-16, 1);
+    px(chispa[0], chispa[1], 8);
+  }
+}
+
+function visor(v) {
+  mirilla(v.e);
+}
+
+/* El punto queda encima del pato que lo cruza. */
+function puntoDeMira() {
+  if (!miraPunta) return;
+  const x = miraPunta.x | 0;
+  const y = miraPunta.y | 0;
+  const c = miraPunta.c;
+  px(x - 1, y - 2, 0);
+  px(x, y - 2, 0);
+  px(x + 1, y - 2, 0);
+  px(x - 1, y - 1, 0);
+  px(x, y - 1, c);
+  px(x + 1, y - 1, 0);
+  px(x - 1, y, 0);
+  px(x, y, c);
+  px(x + 1, y, 0);
+  px(x, y + 1, 0);
+}
+
+function vidas(x, y) {
+  for (let i = 0; i < 4; i++) {
+    const xx = x + i * 12;
+    const viva = i < S.vidas;
+    const alerta = !viva && i === S.vidas && S.flashRojo > 0 && ((S.flashRojo / 70) | 0) % 2 === 0;
+    if (alerta) {
+      lleno(xx, y, 8, 8, 12);
+      marco(xx, y, 8, 8, 0);
+    } else if (viva) {
+      lleno(xx, y, 8, 8, 6);
+      marco(xx, y, 8, 8, 0);
+      px(xx + 2, y + 2, 8);
+    } else {
+      marco(xx, y, 8, 8, 11);
+      linea(xx + 1, y + 1, xx + 6, y + 6, 11);
+      linea(xx + 6, y + 1, xx + 1, y + 6, 11);
+    }
+  }
+}
+
+function dibujarBalas() {
+  if (S.modo !== "juego" || S.balasMax <= 0) return;
+  const paso = 7;
+  let x = 6;
+  const y = 18;
+  for (let i = 0; i < S.balasMax; i++) {
+    const vivo = i < S.balas;
+    lleno(x, y, 5, 8, vivo ? 9 : 1);
+    lleno(x, y, 5, 3, vivo ? 14 : 11);
+    marco(x, y, 5, 8, 0);
+    if (vivo) px(x + 1, y + 1, 8);
+    x += paso;
+  }
+}
+
+function hud() {
+  vidas(6, 6);
+  if (S.modo !== "titulo") {
+    const s = String(S.puntos);
+    const sc = S.pop > 0 ? 3 : 2;
+    texto(s, W - 8 - anchoTexto(s, sc), 6, sc, 6, false);
+  }
+  if (S.racha >= 2 && (S.modo === "juego" || S.modo === "outro")) {
+    texto("X" + S.racha, 58, 8, 2, 8, false);
+  }
+  if (S.modo === "titulo") grito("TOCA", 168, 3, 6, 8, 0);
+  if (S.modo === "descanso") {
+    grito("CAZA", 138, 3, 8, 6, 0);
+    const n = String(S.ronda + 1);
+    texto(n, (W - anchoTexto(n, 3)) >> 1, 178, 3, 6, true);
+  }
+  if (S.modo === "juego" && hayZona()) grito("YA", 36, 3, 0, 8, 6);
+  if (S.modo === "outro" && S.resultado === "bien") grito("BIEN", 36, 3, 0, 8, 6);
+  if (S.modo === "fin") {
+    centroTexto(String(S.puntos), 40, 3, 8);
+    grito("OTRA", 168, 3, 0, 8, 6);
+  }
+  dibujarBalas();
+  for (let i = 0; i < anillos.length; i++) {
+    const a = anillos[i];
+    const k = a.t / 180;
+    if (k >= 1) continue;
+    anillo(a.x, a.y, 3 + k * 9, 3 + k * 9, k < 0.45 ? 8 : 2, 1);
+  }
+}
+
+function escena(v) {
+  cielo();
+  nubesAltas();
+  nubesLejos();
+  nubesCerca();
+  volcanes();
+  pajaros();
+  pradera();
+  sembrar(150, 0.32, 16, 0, 0);
+  sembrar(186, 0.52, 24, 1, 0);
+  arbolLejos();
+  arbustoLejos();
+  sembrar(230, 0.78, 32, 2, 0);
+  arbolAlto();
+  arbusto();
+  tierra();
+  sembrar(286, 1.12, 44, 3, 1);
+  valla();
+  piedras();
+  patoLejos(v.e);
+}
+
+function enZona(p) {
+  if (S.modo !== "juego" || p.estado !== "vuela") return false;
+  return Math.abs(S.juegoT - p.tCentro) <= p.media;
+}
+
+function hayZona() {
+  if (S.resultado) return false;
+  for (let i = 0; i < patos.length; i++) if (enZona(patos[i])) return true;
+  return false;
+}
+
+function distCentro(p) {
+  const q = donde(p);
+  return Math.hypot(camX(q.x) - MIRA_X, camY(q.y) - MIRA_Y);
+}
+
+function mejorBlanco() {
+  let mejor = null;
+  let mejorD = 1e9;
+  for (let i = 0; i < patos.length; i++) {
+    const p = patos[i];
+    if (!enZona(p)) continue;
+    const d = distCentro(p);
+    if (d < mejorD) {
+      mejorD = d;
+      mejor = p;
+    }
+  }
+  return mejor;
+}
+
+function quedaVivo() {
+  for (let i = 0; i < patos.length; i++) {
+    const e = patos[i].estado;
+    if (e === "espera" || e === "vuela") return true;
+  }
+  return false;
+}
+
+/* Todos cruzan el aro. Cambian el rumbo, no el blanco. */
+function ruta(tipo) {
+  const x = MIRA_X;
+  const y = MIRA_Y;
+  if (tipo === 0) return { x0: x - 112, y0: y, x1: x + 112, y1: y, amp: 3.5 };
+  if (tipo === 1) return { x0: x + 112, y0: y - 8, x1: x - 112, y1: y + 8, amp: 2.5 };
+  if (tipo === 2) return { x0: x - 96, y0: y + 30, x1: x + 96, y1: y - 30, amp: 0 };
+  return { x0: x + 22, y0: y + 42, x1: x - 22, y1: y - 42, amp: 0 };
+}
+
+function prepararOleada() {
+  const n = Math.min(4, 1 + S.ronda);
+  const baseDur = Math.max(1680, 5200 - S.ronda * 700);
+  const paso = Math.max(220, 1100 - S.ronda * 120);
+  patos.length = 0;
+  plumas.length = 0;
+  anillos.length = 0;
+  let fin = 1200;
+  for (let i = 0; i < n; i++) {
+    const tipo = i % 4;
+    const r = ruta(tipo);
+    const dur = Math.max(1400, baseDur * [1, 0.5, 1.25, 0.28][tipo]);
+    const largo = Math.hypot(r.x1 - r.x0, r.y1 - r.y0) || 1;
+    const velS = (largo / dur) * 1000;
+    /* 2 * media es la ventana de YA: como mínimo 180 ms. */
+    const media = Math.max(90, (20 / velS) * 1000);
+    const inicio = 360 + i * (dur * 0.36 + paso * 0.42);
+    const tCentro = inicio + dur * 0.5;
+    patos.push({
+      tipo: tipo,
+      x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y1, amp: r.amp,
+      dur: dur,
+      inicio: inicio,
+      tCentro: tCentro,
+      media: media,
+      dir: r.x1 >= r.x0 ? 1 : -1,
+      s: [0.78, 0.56, 1.08, 0.92][tipo],
+      ala: i & 1,
+      flap: i * 37,
+      ang: 0,
+      estado: "espera",
+      tinte: 0,
+      t: 0,
+      wx: MIRA_X,
+      wy: MIRA_Y,
+      pitido: 0
+    });
+    const bordeT = tCentro + media + 800;
+    if (bordeT > fin) fin = bordeT;
+  }
+  S.balas = n + 1;
+  S.balasMax = n + 1;
+  S.limite = fin;
+  S.resultado = "";
+  S.flashRojo = 0;
+}
+
+function estallar(wx, wy) {
+  for (let i = 0; i < 7; i++) {
+    const a = -Math.PI / 2 + (Math.random() - 0.5) * 2.1;
+    const sp = 26 + Math.random() * 36;
+    plumas.push({
+      x: wx,
+      y: wy,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp,
+      t: 0,
+      vida: 200 + (i % 3) * 24,
+      c: i & 1 ? 14 : 15
+    });
+  }
+}
+
+function soltarGolpes() {
+  for (let i = 0; i < patos.length; i++) {
+    const p = patos[i];
+    if (p.estado !== "golpe") continue;
+    p.estado = "cae";
+    p.t = 0;
+    p.tinte = 0;
+    p.ang = 0;
+    estallar(p.wx, p.wy);
+  }
+}
+
+function moverCaida(p, dt) {
+  p.t += dt;
+  const k = Math.min(1, p.t / 340);
+  const dir = (p.x1 - p.x0) >= 0 ? 1 : -1;
+  p.wy += (34 + k * 150) * dt / 1000;
+  p.wx += dir * 10 * dt / 1000;
+  p.ang += dt * 0.02;
+  if (p.t >= 380) p.estado = "listo";
+}
+
+function moverPlumas(dt) {
+  for (let i = plumas.length - 1; i >= 0; i--) {
+    const f = plumas[i];
+    f.t += dt;
+    if (f.t > f.vida) {
+      plumas.splice(i, 1);
+      continue;
+    }
+    f.vy += 48 * dt / 1000;
+    f.x += f.vx * dt / 1000;
+    f.y += f.vy * dt / 1000;
+  }
+}
+
+function asegurar() {
+  if (ac) {
+    if (ac.state === "suspended") ac.resume();
+    return;
+  }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  try { ac = new AC(); } catch (e) { return; }
+  master = ac.createGain();
+  master.gain.value = 0.22;
+  master.connect(ac.destination);
+  const n = (ac.sampleRate * 0.08) | 0;
+  ruido = ac.createBuffer(1, n, ac.sampleRate);
+  const d = ruido.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+}
+
+function tono(freq, dur, tipo, vol, cuando, destino) {
+  if (!ac) return;
+  const t = cuando == null ? ac.currentTime : cuando;
+  const o = ac.createOscillator();
+  const g = ac.createGain();
+  o.type = tipo;
+  o.frequency.setValueAtTime(Math.max(40, freq), t);
+  if (destino) o.frequency.exponentialRampToValueAtTime(Math.max(40, destino), t + dur);
+  g.gain.setValueAtTime(Math.max(0.001, vol), t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g);
+  g.connect(master);
+  o.start(t);
+  o.stop(t + dur + 0.02);
+}
+
+function ruidoCorto(tipo, hz, dur, vol, espera) {
+  if (!ac || !ruido) return;
+  const src = ac.createBufferSource();
+  src.buffer = ruido;
+  const f = ac.createBiquadFilter();
+  f.type = tipo;
+  f.frequency.value = hz;
+  const g = ac.createGain();
+  const t0 = ac.currentTime + (espera || 0);
+  g.gain.setValueAtTime(vol, t0);
+  g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+  src.connect(f);
+  f.connect(g);
+  g.connect(master);
+  src.start(t0);
+  src.stop(t0 + dur + 0.02);
+}
+
+function sndDisparo() {
+  ruidoCorto("lowpass", 340, 0.14, 0.5, 0);
+  tono(100, 0.1, "sine", 0.2, null, 42);
+  ruidoCorto("highpass", 1600, 0.035, 0.28, 0.08);
+}
+
+/* Dos clics: la bomba llega atrás y vuelve a su sitio. */
+function sndBomba() {
+  if (!ac) return;
+  const t = ac.currentTime;
+  ruidoCorto("bandpass", 1800, 0.02, 0.2, 0.18);
+  tono(220, 0.035, "square", 0.06, t + 0.18, 90);
+  ruidoCorto("bandpass", 1100, 0.025, 0.16, 0.36);
+  tono(150, 0.04, "square", 0.05, t + 0.36, 70);
+}
+
+/* Fogonazo de un frame, culatazo y ciclo de la bomba. */
+function patear() {
+  S.retroceso = 8;
+  S.fogonazo = 1;
+  S.bombeo = 480;
+  sndDisparo();
+  sndBomba();
+}
+
+function sndSeco() {
+  ruidoCorto("highpass", 980, 0.03, 0.24, 0);
+}
+
+function sndAla(freq) {
+  ruidoCorto("bandpass", freq, 0.03, 0.05, 0);
+}
+
+function sndEscape() {
+  tono(420, 0.07, "square", 0.1, null, 170);
+  tono(140, 0.2, "sawtooth", 0.12, null, 48);
+}
+
+function sndFanfarria() {
+  if (!ac) return;
+  const t = ac.currentTime;
+  tono(523, 0.07, "square", 0.14, t);
+  tono(659, 0.07, "square", 0.14, t + 0.07);
+  tono(784, 0.14, "square", 0.16, t + 0.14);
+}
+
+function acertar(p) {
+  const d = distCentro(p);
+  const perfecto = d <= 6;
+  const base = perfecto ? 100 : d <= 14 ? 60 : d <= 24 ? 35 : 20;
+  const pts = base + S.racha * (perfecto ? 15 : 8);
+  S.puntos += pts;
+  S.racha += 1;
+  S.pop = 240;
+  const q = posPato(p);
+  p.wx = q.x;
+  p.wy = q.y;
+  p.estado = "golpe";
+  p.tinte = 1;
+  p.t = 0;
+  p.ang = 0;
+  pausa = 100;
+  patear();
+  tono(perfecto ? 880 : 640, 0.06, "square", 0.1);
+  if (!quedaVivo()) {
+    S.resultado = "bien";
+    S.marcaBien = S.juegoT;
+  }
+}
+
+function fallar(p) {
+  if (S.resultado) return;
+  S.resultado = "mal";
+  S.vidas -= 1;
+  if (S.vidas < 0) S.vidas = 0;
+  S.racha = 0;
+  S.flashRojo = 300;
+  p.estado = "huye";
+  p.tinte = 2;
+  p.t = 0;
+  sndEscape();
+}
+
+function disparar() {
+  if (S.modo !== "juego" || pausa > 0 || S.resultado) return;
+  const blanco = mejorBlanco();
+  if (blanco) {
+    if (S.balas <= 0) {
+      sndSeco();
+      return;
+    }
+    S.balas -= 1;
+    acertar(blanco);
+    return;
+  }
+  if (S.balas <= 0) {
+    sndSeco();
+    return;
+  }
+  /* Al aire: culatazo y bomba, sin quitar vida. */
+  S.balas -= 1;
+  S.racha = 0;
+  patear();
+  anillos.push({ t: 0, x: MIRA_X, y: MIRA_Y });
+}
+
+function entrarJuego() {
+  S.modo = "juego";
+  S.t = 0;
+  S.juegoT = 0;
+  S.resultado = "";
+  S.flashRojo = 0;
+  tono(494, 0.04, "square", 0.1);
+}
+
+function empezarOutro() {
+  if (S.modo !== "juego") return;
+  S.modo = "outro";
+  S.t = 0;
+  if (S.resultado === "bien") sndFanfarria();
+}
+
+function cerrarOutro() {
+  if (S.vidas <= 0) {
+    S.modo = "fin";
+    S.t = 0;
+    tono(96, 0.28, "square", 0.16, null, 40);
+    return;
+  }
+  if (S.resultado === "bien") S.ronda += 1;
+  prepararOleada();
+  S.modo = "descanso";
+  S.t = 0;
+}
+
+function empezar() {
+  S.vidas = 4;
+  S.ronda = 0;
+  S.puntos = 0;
+  S.racha = 0;
+  S.retroceso = 0;
+  S.fogonazo = 0;
+  S.bombeo = 0;
+  S.flashRojo = 0;
+  S.pop = 0;
+  pausa = 0;
+  prepararOleada();
+  S.modo = "descanso";
+  S.t = 0;
+  tono(230, 0.08, "sine", 0.12);
+}
+
+function actualizarJuego(dt) {
+  for (let i = 0; i < patos.length; i++) {
+    const p = patos[i];
+    if (p.estado === "espera" && S.juegoT >= p.inicio) p.estado = "vuela";
+    if (p.estado === "vuela") {
+      p.flap += dt;
+      const paso = Math.max(76, p.dur / 16);
+      if (p.flap >= paso) {
+        p.flap -= paso;
+        p.ala ^= 1;
+        sndAla(600 + p.tipo * 55 + (p.ala ? 40 : 0));
+      }
+      if (!p.pitido && enZona(p)) {
+        p.pitido = 1;
+        tono(932, 0.04, "square", 0.11);
+      }
+      if (!S.resultado && S.juegoT > p.tCentro + p.media) fallar(p);
+    } else if (p.estado === "cae") {
+      moverCaida(p, dt);
+    }
+  }
+  if (S.resultado === "mal") {
+    S.flashRojo -= dt;
+    if (S.flashRojo <= 0) empezarOutro();
+  } else if (S.resultado === "bien") {
+    if (pausa <= 0 && S.juegoT > S.marcaBien + 480) empezarOutro();
+  } else if (!quedaVivo() && S.juegoT > 240) {
+    S.resultado = "bien";
+    S.marcaBien = S.juegoT;
+  } else if (!S.resultado && S.juegoT > S.limite) {
+    let suelto = null;
+    for (let i = 0; i < patos.length; i++) {
+      if (patos[i].estado === "vuela") suelto = patos[i];
+    }
+    if (suelto) fallar(suelto);
+    else {
+      S.resultado = "bien";
+      S.marcaBien = S.juegoT;
+    }
+  }
+}
+
+function logica(dt) {
+  if (S.modo === "descanso") {
+    if (S.t >= T_DESCANSO) {
+      S.modo = "intro";
+      S.t = 0;
+      tono(170, 0.1, "triangle", 0.07, null, 320);
+    }
+    return;
+  }
+  if (S.modo === "intro") {
+    if (S.t >= T_INTRO) entrarJuego();
+    return;
+  }
+  if (S.modo === "juego") {
+    actualizarJuego(dt);
+    return;
+  }
+  if (S.modo === "outro" && S.t >= T_OUTRO) cerrarOutro();
+}
+
+function pulso(e) {
+  if (e && e.preventDefault) e.preventDefault();
+  asegurar();
+  if (S.modo === "titulo" || S.modo === "fin") {
+    empezar();
+    return;
+  }
+  if (S.modo === "juego") disparar();
+}
+
+function presentar() {
+  for (let i = 0, n = idx.length; i < n; i++) {
+    const p = idx[i] * 3;
+    const o = i << 2;
+    pixeles[o] = PAL[p];
+    pixeles[o + 1] = PAL[p + 1];
+    pixeles[o + 2] = PAL[p + 2];
+    pixeles[o + 3] = 255;
+  }
+  ctxInterno.putImageData(imagen, 0, 0);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const escala = Math.max(1, Math.floor(Math.min(window.innerWidth / W, window.innerHeight / H)));
+  if (escala !== escalaPrev || dpr !== dprPrev) {
+    escalaPrev = escala;
+    dprPrev = dpr;
+    vista.width = Math.floor(W * escala * dpr);
+    vista.height = Math.floor(H * escala * dpr);
+    vista.style.width = W * escala + "px";
+    vista.style.height = H * escala + "px";
+    ctxVista = vista.getContext("2d", { alpha: false });
+  }
+  ctxVista.imageSmoothingEnabled = false;
+  ctxVista.fillStyle = "#0A0A0A";
+  ctxVista.fillRect(0, 0, vista.width, vista.height);
+  ctxVista.drawImage(interno, 0, 0, W, H, 0, 0, vista.width, vista.height);
+}
+
+function cuadro(ahora) {
+  if (!antes) antes = ahora;
+  let dt = ahora - antes;
+  if (dt > 34) dt = 34;
+  if (dt < 0) dt = 0;
+  antes = ahora;
+  seg += dt / 1000;
+  const segDt = dt / 1000;
+  scroll.nube -= 18 * segDt;
+  scroll.colina -= 8 * segDt;
+  scroll.alta -= 3 * segDt;
+  if (S.pop > 0) S.pop -= dt;
+  if (S.bombeo > 0) {
+    S.bombeo -= dt;
+    if (S.bombeo < 0) S.bombeo = 0;
+  }
+  if (S.retroceso > 0) {
+    S.retroceso -= dt * 0.04;
+    if (S.retroceso < 0) S.retroceso = 0;
+  }
+  for (let i = anillos.length - 1; i >= 0; i--) {
+    anillos[i].t += dt;
+    if (anillos[i].t > 200) anillos.splice(i, 1);
+  }
+  moverPlumas(dt);
+  S.t += dt;
+  if (pausa > 0) {
+    pausa -= dt;
+    if (pausa <= 0) {
+      pausa = 0;
+      soltarGolpes();
+    }
+  } else {
+    if (S.modo === "juego") S.juegoT += dt;
+    logica(dt);
+  }
+  const v = cuadroCamara();
+  idx.fill(16);
+  escena(v);
+  visor(v);
+  if (S.fogonazo > 0) S.fogonazo = 0;
+  patosDelante();
+  puntoDeMira();
+  dibujarPlumas();
+  dibujarPerro();
+  hud();
+  presentar();
+  requestAnimationFrame(cuadro);
+}
+
+vista.addEventListener("pointerdown", pulso, { passive: false });
+addEventListener("pointerdown", function (e) {
+  if (e.target === vista) return;
+  pulso(e);
+}, { passive: false });
+addEventListener("keydown", function (ev) {
+  if (ev.repeat) return;
+  if (ev.code !== "Space" && ev.code !== "Enter") return;
+  pulso(ev);
+});
+addEventListener("contextmenu", function (ev) { ev.preventDefault(); });
+addEventListener("touchmove", function (ev) { ev.preventDefault(); }, { passive: false });
+addEventListener("touchstart", function (ev) { ev.preventDefault(); }, { passive: false });
+addEventListener("gesturestart", function (ev) { ev.preventDefault(); }, { passive: false });
+addEventListener("wheel", function (ev) { ev.preventDefault(); }, { passive: false });
+requestAnimationFrame(cuadro);
+</script>
+</body>
+</html>
