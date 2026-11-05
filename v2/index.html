@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#2B35FF">
+<title>PITCH</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #0a0a0a;
+    overflow: hidden;
+    touch-action: none;
+    overscroll-behavior: none;
+    user-select: none;
+  }
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  canvas {
+    touch-action: none;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<canvas id="v"></canvas>
+<script>
+"use strict";
+
+/* Prueba v2. Una tabla de 10, un fondo por tipo,
+   un interprete para 5 verbos. Lienzo 180x320.
+   Sin imagenes, sin fuentes y sin audio externo. */
+
+const W = 180;
+const H = 320;
+const ZY = 104;
+const ZH = 22;
+const ZX = 60;
+const ZW = 60;
+const OY = 108;
+const OH = 14;
+
+/* 0 tinta. 1 azul + 2 sombras. 4 lima, solo la zona.
+   5 papel + 2. 8 piel + 2. 11 verde + 2. 14 calido + 2. */
+const RGB = new Uint8ClampedArray([
+  10, 10, 10,
+  43, 53, 255, 24, 30, 156, 12, 16, 64,
+  215, 255, 58,
+  247, 247, 242, 168, 168, 156, 96, 96, 88,
+  224, 176, 132, 176, 118, 74, 120, 74, 42,
+  32, 148, 74, 14, 96, 44, 8, 52, 24,
+  232, 122, 48, 168, 72, 24, 96, 36, 12
+]);
+
+const ABC = "ABCDEGHIJLMNOPRSTUV0123456789";
+const GL = [
+  0x699F99, 0xE9E99E, 0x698896, 0xE9999E, 0xF8E88F, 0x698B96, 0x99F999, 0xF4444F,
+  0x111196, 0x88888F, 0x9FF999, 0x9DB999, 0x699996, 0xE99E88, 0xE99EA9, 0x78611E,
+  0xF44444, 0x999996, 0x999964, 0x69BD96, 0x4C444E, 0x69124F, 0xE16196, 0x26AF22,
+  0xF8E196, 0x68E996, 0xF12444, 0x696996, 0x699716
+];
+
+const NOMBRE = ["TOCA", "AGUANTA", "SUELTA", "NO", "CORTA"];
+const RUTA = ["GUATEMALA", "SAN SALVADOR", "SAN JOSE"];
+/* Camisa por fondo. Base, sombra en +1, sombra profunda en +2. */
+const TRAJE = [1, 5, 14, 5, 5, 14, 14, 11, 14, 1];
+
+/* verbo, fondo, param. bit0 vuelve, bit1 pieza en L.
+   fondos: pasillo mesa bus lago arco barrilete piramide pozas aros tarima */
+const ESC = [
+  [0, 0, 0],
+  [0, 1, 2],
+  [1, 2, 0],
+  [2, 3, 0],
+  [3, 4, 0],
+  [4, 5, 0],
+  [0, 6, 1],
+  [1, 7, 1],
+  [2, 8, 0],
+  [0, 9, 0]
+];
+
+const idx = new Uint8Array(W * H);
+const PZ = [];
+const vista = document.getElementById("v");
+const interno = document.createElement("canvas");
+interno.width = W;
+interno.height = H;
+const ctxI = interno.getContext("2d", { alpha: false });
+const imagen = ctxI.createImageData(W, H);
+const pixeles = imagen.data;
+let ctxV = null;
+let escPrev = 0;
+let dprPrev = 0;
+
+let actx = null;
+let mezcla = null;
+let mazo = [];
+let mi = 0;
+let actual = 0;
+let proximo = 0;
+let fase = 0;
+let t = 0;
+let bg = 0;
+let tr = 0;
+let cierre = 0;
+let ox = 8;
+let cortes = 0;
+let hold = 0;
+let resuelto = 0;
+let fb = 0;
+let pose = 0;
+let poseT = 0;
+let puntos = 0;
+let vidas = 4;
+let pulsado = false;
+let ptrId = null;
+let tecla = false;
+let tDown = 0;
+let gestoLocal = false;
+let noListo = false;
+let falloPendiente = false;
+
+function px(x, y, c) {
+  x |= 0;
+  y |= 0;
+  if (x < 0 || y < 0 || x >= W || y >= H) return;
+  idx[y * W + x] = c;
+}
+
+function rect(x, y, w, h, c) {
+  x |= 0;
+  y |= 0;
+  w |= 0;
+  h |= 0;
+  if (w <= 0 || h <= 0) return;
+  const x0 = x < 0 ? 0 : x;
+  const y0 = y < 0 ? 0 : y;
+  const x1 = x + w > W ? W : x + w;
+  const y1 = y + h > H ? H : y + h;
+  if (x0 >= x1 || y0 >= y1) return;
+  for (let yy = y0; yy < y1; yy++) idx.fill(c, yy * W + x0, yy * W + x1);
+}
+
+function parte(x, y, w, h, c) {
+  if (w > 0 && h > 0) PZ.push(x | 0, y | 0, w | 0, h | 0, c | 0);
+}
+
+function trazo() {
+  for (let i = 0; i < PZ.length; i += 5) {
+    rect(PZ[i] - 1, PZ[i + 1] - 1, PZ[i + 2] + 2, PZ[i + 3] + 2, 0);
+  }
+  for (let i = 0; i < PZ.length; i += 5) {
+    rect(PZ[i], PZ[i + 1], PZ[i + 2], PZ[i + 3], PZ[i + 4]);
+  }
+  PZ.length = 0;
+}
+
+function disco(cx, cy, r, c) {
+  for (let y = -r; y <= r; y++) {
+    const w = Math.sqrt(r * r - y * y) | 0;
+    rect(cx - w, cy + y, w * 2 + 1, 1, c);
+  }
+}
+
+function anillo(cx, cy, r, c) {
+  const a = (r - 2) * (r - 2);
+  const b = r * r;
+  for (let y = -r; y <= r; y++) {
+    for (let x = -r; x <= r; x++) {
+      const d = x * x + y * y;
+      if (d <= b && d >= a) px(cx + x, cy + y, c);
+    }
+  }
+}
+
+function linea(x0, y0, x1, y1, c) {
+  let n = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)) | 0;
+  if (n < 1) n = 1;
+  for (let i = 0; i <= n; i++) {
+    const u = i / n;
+    px(x0 + (x1 - x0) * u, y0 + (y1 - y0) * u, c);
+  }
+}
+
+/* Rellena cualquier triangulo. Volcanes y barrilete. */
+function tri(ax, ay, bx, by, cx, cy, col) {
+  const xs = [ax, bx, cx];
+  const ys = [ay, by, cy];
+  let y0 = ys[0];
+  let y1 = ys[0];
+  for (let i = 1; i < 3; i++) {
+    if (ys[i] < y0) y0 = ys[i];
+    if (ys[i] > y1) y1 = ys[i];
+  }
+  if (y1 === y0) return;
+  for (let y = y0 | 0; y <= y1; y++) {
+    let a = 0;
+    let b = 0;
+    let n = 0;
+    for (let i = 0; i < 3; i++) {
+      const j = (i + 1) % 3;
+      const ya = ys[i];
+      const yb = ys[j];
+      if ((ya <= y && yb > y) || (yb <= y && ya > y)) {
+        const hit = xs[i] + (xs[j] - xs[i]) * ((y - ya) / (yb - ya));
+        if (!n || hit < a) a = hit;
+        if (!n || hit > b) b = hit;
+        n++;
+      }
+    }
+    if (n >= 2) rect(a | 0, y, (b - a + 1) | 0, 1, col);
+  }
+}
+
+function cinta(y, vel, sep, w, h, c) {
+  const s = ((bg * vel) % sep + sep) % sep;
+  for (let i = -1; i < 8; i++) rect((i * sep + s) | 0, y, w, h, c);
+}
+
+function texto(s, x, y, c, sc) {
+  sc = sc || 1;
+  let cx = x | 0;
+  s = String(s).toUpperCase();
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === " ") { cx += 3 * sc; continue; }
+    if (ch === ".") {
+      rect(cx + sc, y + 5 * sc, sc, sc, c);
+      cx += 3 * sc;
+      continue;
+    }
+    const k = ABC.indexOf(ch);
+    if (k < 0) { cx += 4 * sc; continue; }
+    const g = GL[k];
+    for (let row = 0; row < 6; row++) {
+      const bits = (g >> (20 - row * 4)) & 15;
+      for (let col = 0; col < 4; col++) {
+        if (bits & (8 >> col)) rect(cx + col * sc, y + row * sc, sc, sc, c);
+      }
+    }
+    cx += 5 * sc;
+  }
+}
+
+function ancho(s, sc) {
+  sc = sc || 1;
+  let w = 0;
+  s = String(s).toUpperCase();
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    w += (ch === " " || ch === "." ? 3 : 5) * sc;
+  }
+  return w > sc ? w - sc : w;
+}
+
+function poner(s, y, c, sc) {
+  texto(s, ((W - ancho(s, sc)) / 2) | 0, y, c, sc);
+}
+
+function audio() {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!actx) {
+      actx = new AC();
+      mezcla = actx.createGain();
+      mezcla.gain.value = 0.16;
+      mezcla.connect(actx.destination);
+    }
+    if (actx.state === "suspended") actx.resume();
+  } catch (e) {
+    actx = null;
+  }
+}
+
+function pitido(f, d, tipo, g, hacia) {
+  if (!actx) return;
+  const t0 = actx.currentTime;
+  const o = actx.createOscillator();
+  const n = actx.createGain();
+  o.type = tipo;
+  o.frequency.setValueAtTime(f, t0);
+  if (hacia) o.frequency.exponentialRampToValueAtTime(hacia, t0 + d);
+  n.gain.setValueAtTime(g, t0);
+  n.gain.exponentialRampToValueAtTime(0.001, t0 + d);
+  o.connect(n);
+  n.connect(mezcla);
+  o.start(t0);
+  o.stop(t0 + d + 0.02);
+}
+
+/* Tres timbres: acierto, fallo, cambio. */
+function snd(k) {
+  if (!actx) return;
+  if (k === 0) {
+    pitido(523, 0.07, "square", 0.1);
+    pitido(784, 0.11, "square", 0.08);
+  } else if (k === 1) {
+    pitido(170, 0.18, "square", 0.11, 48);
+  } else {
+    pitido(392, 0.06, "triangle", 0.08);
+    pitido(587, 0.09, "triangle", 0.06);
+  }
+}
+
+function verbo(i) { return ESC[i][0]; }
+
+function durDe(i) { return verbo(i) === 3 ? 1.4 : 2.8; }
+
+function solapa(x, w) { return x < ZX + ZW && x + w > ZX; }
+
+/* El blanco cruza la franja. La zona dura ~0.9s. */
+function xLineal(dur) {
+  const p = Math.min(1, t / dur);
+  const x = -20 + p * 220;
+  return (ESC[actual][2] & 1) ? 200 - x : x;
+}
+
+function cabeza() {
+  return 16 + Math.min(1, t / 2.8) * 140;
+}
+
+function barajar() {
+  mazo = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+  for (let i = 9; i > 0; i--) {
+    const j = (Math.random() * (i + 1)) | 0;
+    const a = mazo[i];
+    mazo[i] = mazo[j];
+    mazo[j] = a;
+  }
+  mi = 0;
+}
+
+function tomar() {
+  if (mi >= 10) barajar();
+  return mazo[mi++];
+}
+
+function preparar() {
+  t = 0;
+  ox = (ESC[actual][2] & 1) ? 158 : 8;
+  cortes = 0;
+  hold = 0;
+  resuelto = 0;
+  fb = 0;
+  gestoLocal = false;
+  noListo = verbo(actual) === 3;
+}
+
+function acertar() {
+  if (resuelto) return;
+  resuelto = 1;
+  fb = 0.5;
+  pose = 1;
+  poseT = 0.45;
+  puntos += 100;
+  snd(0);
+}
+
+function fallar() {
+  if (resuelto) return;
+  resuelto = 2;
+  fb = 0.5;
+  pose = 2;
+  poseT = 0.6;
+  if (vidas > 0) vidas--;
+  snd(1);
+}
+
+function cielo(c) { rect(0, 38, W, H - 38, c); }
+
+function rueda(cx, cy) {
+  disco(cx, cy, 7, 0);
+  disco(cx, cy, 3, 6);
+  const a = bg * 2;
+  px(cx + (Math.cos(a) * 3) | 0, cy + (Math.sin(a) * 3) | 0, 5);
+}
+
+function laptop(x, y) {
+  rect(x, y, 34, 14, 1);
+  rect(x - 3, y + 14, 40, 4, 0);
+}
+
+/* 0 pasillo. Luces mas lentas que el bloque. */
+function pasillo() {
+  cielo(3);
+  for (let y = 40; y < 100; y++) {
+    const m = (68 - ((y - 40) / 60) * 26) | 0;
+    rect(0, y, m, 1, 2);
+    rect(W - m, y, m, 1, 1);
+  }
+  for (let y = 130; y < 300; y++) {
+    const u = (y - 130) / 170;
+    const m = (40 - u * 30) | 0;
+    rect(0, y, m, 1, 2);
+    rect(W - m, y, m, 1, 1);
+    if ((((y + bg * 14) | 0) % 14) === 0) rect(m + 2, y, W - m * 2 - 4, 1, 2);
+  }
+  rect(68, 48, 44, 50, 0);
+  rect(72, 52, 36, 42, 6);
+  texto("502", 83, 60, 0, 1);
+  const d = (bg * 8) % 18;
+  rect(74 + (d | 0), 84, 8, 2, 5);
+  cinta(40, 26, 42, 14, 3, 5);
+}
+
+/* 1 mesa. Cada laptop son dos rectangulos. */
+function mesa() {
+  cielo(3);
+  rect(6, 50, 168, 6, 7);
+  rect(6, 56, 168, 40, 6);
+  laptop(14, 58);
+  laptop(112, 60);
+  rect(74, 62, 12, 8, 0);
+  rect(73, 62, 14, 2, 5);
+  rect(94, 66, 10, 8, 0);
+  rect(93, 66, 12, 2, 5);
+  cinta(90, 30, 48, 20, 3, 1);
+  rect(0, 128, W, 192, 3);
+  cinta(168, 14, 36, 16, 2, 2);
+}
+
+/* 2 camioneta. El letrero cambia de ciudad. */
+function bus() {
+  cielo(3);
+  const k = (Math.sin(bg * 1.3) * 2) | 0;
+  const y = 44 + k;
+  rect(8, y, 164, 14, 0);
+  rect(10, y + 2, 160, 10, 5);
+  const nom = RUTA[((bg / 0.7) | 0) % 3];
+  texto(nom, ((W - ancho(nom, 1)) / 2) | 0, y + 4, 0, 1);
+  rect(14, y + 16, 152, 26, 1);
+  rect(14, y + 16, 152, 5, 2);
+  rect(14, y + 34, 152, 6, 14);
+  rect(22, y + 22, 26, 10, 5);
+  rect(54, y + 22, 26, 10, 5);
+  rect(96, y + 22, 22, 10, 6);
+  rect(124, y + 22, 28, 10, 5);
+  rueda(40, y + 46);
+  rueda(142, y + 46);
+  rect(0, 128, W, 192, 7);
+  cinta(156, 10, 44, 18, 3, 0);
+}
+
+function volcan(cx, base, c) {
+  tri(cx, base - 46, cx - 26, base, cx + 26, base, c);
+  tri(cx, base - 34, cx - 8, base - 12, cx + 9, base - 14, 5);
+}
+
+/* 3 lago. El agua va mas lenta que la barra. */
+function lago() {
+  cielo(3);
+  volcan(34, 100, 2);
+  volcan(90, 102, 1);
+  volcan(146, 98, 2);
+  rect(0, 128, W, 192, 2);
+  const s = (bg * 18) | 0;
+  for (let i = 0; i < 8; i++) {
+    const y = 136 + i * 16;
+    rect((s + i * 29) % 150, y, 20, 1, 5);
+    rect((s + 40 + i * 17) % 140, y + 7, 12, 1, 1);
+  }
+}
+
+function lluvia() {
+  const s = (bg * 32) | 0;
+  for (let i = 0; i < 14; i++) {
+    const y = 42 + ((i * 29 + s) % 200);
+    const x = 8 + ((i * 13) % 164);
+    px(x, y, 5);
+    px(x, y + 3, 6);
+  }
+}
+
+/* 4 arco. La lluvia es mas lenta que la luz. */
+function arco() {
+  cielo(3);
+  lluvia();
+  rect(14, 46, 18, 52, 6);
+  rect(14, 46, 18, 4, 5);
+  rect(86, 50, 16, 48, 6);
+  rect(86, 50, 16, 4, 5);
+  rect(34, 62, 48, 36, 0);
+  rect(120, 42, 32, 56, 7);
+  rect(120, 42, 32, 4, 5);
+  disco(136, 58, 8, 5);
+  disco(136, 58, 5, 0);
+  const a = bg * 0.7;
+  linea(136, 58, 136 + (Math.cos(a) * 5) | 0, 58 + (Math.sin(a) * 5) | 0, 5);
+  px(136, 58, 14);
+  rect(0, 140, W, 10, 7);
+  cinta(168, 12, 40, 14, 2, 6);
+}
+
+/* 5 barrilete. El rombo se mece menos que la cuerda. */
+function barrilete() {
+  cielo(3);
+  texto("1", 8, 42, 5, 1);
+  px(13, 47, 5);
+  texto("11", 16, 42, 5, 1);
+  const sx = (Math.sin(bg * 1.6) * 6) | 0;
+  const cx = 90 + sx;
+  tri(cx, 150, cx - 42, 188, cx, 224, 5);
+  tri(cx, 150, cx + 42, 188, cx, 224, 6);
+  rect(cx - 1, 158, 3, 60, 1);
+  rect(cx - 20, 194, 40, 2, 1);
+  for (let i = 0; i < 4; i++) {
+    const tx = cx + 34 + (Math.sin(bg * 1.6 + i) * 3) | 0;
+    rect(tx, 166 + i * 14, 4, 7, i & 1 ? 14 : 1);
+  }
+}
+
+/* 6 piramide. Una linea recorre los escalones. */
+function piramide() {
+  cielo(7);
+  for (let i = 0; i < 5; i++) {
+    const w = 22 + i * 26;
+    const y = 42 + i * 11;
+    const c = (((bg * 1.2) | 0) % 5) === i ? 5 : (i & 1 ? 6 : 7);
+    rect((W - w) >> 1, y, w, 9, c);
+    rect((W - w) >> 1, y, w, 2, 0);
+  }
+  rect(28, 42 + ((bg * 22) | 0) % 56, 124, 1, 0);
+  rect(0, 132, W, 188, 6);
+  cinta(176, 12, 40, 10, 2, 7);
+}
+
+/* 7 pozas, dos verdes, techo de piedra. */
+function pozas() {
+  cielo(6);
+  rect(8, 42, 164, 52, 7);
+  rect(8, 42, 164, 5, 5);
+  for (let i = 0; i < 6; i++) rect(16 + i * 28, 48, 2, 40, 0);
+  rect(10, 148, 74, 42, 11);
+  rect(10, 148, 74, 8, 13);
+  rect(96, 156, 72, 46, 12);
+  rect(96, 156, 72, 8, 11);
+  const s = (bg * 10) | 0;
+  for (let i = 0; i < 4; i++) {
+    px(18 + ((s + i * 11) % 56), 164 + i * 6, 5);
+    px(104 + ((s + i * 9) % 52), 174 + i * 6, 5);
+  }
+}
+
+/* 8 pared, aro calido y aro frio. */
+function aros() {
+  cielo(5);
+  const s = (bg * 14) | 0;
+  for (let i = 0; i < 6; i++) {
+    rect(((i * 40 + s) % 210) - 16, 48 + i * 28, 14, 3, 6);
+  }
+  disco(56, 70, 12, 5);
+  disco(124, 70, 12, 5);
+  anillo(56, 70, 15, 14);
+  anillo(56, 70, 12, 15);
+  anillo(124, 70, 15, 1);
+  anillo(124, 70, 12, 2);
+  if (resuelto === 1 && fb > 0) {
+    rect(86, 62, 8, 16, 0);
+    rect(78, 66, 24, 8, 5);
+  }
+}
+
+/* 9 tarima. Diapositiva en blanco y una figura. */
+function tarima() {
+  cielo(3);
+  rect(38, 42, 104, 54, 0);
+  rect(41, 45, 98, 48, 5);
+  const sx = (bg * 14) % 70;
+  rect(48 + (sx | 0), 50, 8, 4, 6);
+  parte(86, 74, 4, 8, 3);
+  parte(84, 66, 8, 9, 1);
+  parte(85, 60, 6, 7, 8);
+  parte(85, 58, 6, 3, 0);
+  trazo();
+  px(87, 63, 0);
+  px(90, 63, 0);
+  rect(12, 140, 156, 12, 7);
+  rect(20, 152, 140, 6, 6);
+  for (let i = 0; i < 8; i++) {
+    const by = (Math.sin(bg * 2 + i) * 4) | 0;
+    const x = 12 + i * 20;
+    rect(x, 186 + by, 12, 10, 0);
+    rect(x + 2, 178 + by, 8, 10, i & 1 ? 8 : 6);
+  }
+}
+
+const FONDO = [pasillo, mesa, bus, lago, arco, barrilete, piramide, pozas, aros, tarima];
+
+function bloque(x) {
+  rect(x, OY, 14, OH, 0);
+  rect(x + 2, OY + 2, 10, 3, 5);
+  rect(x + 2, OY + 8, 10, 3, 2);
+}
+
+function ele(x) {
+  rect(x, OY, 5, OH, 0);
+  rect(x, OY + 9, 14, 5, 0);
+  rect(x, OY, 5, 2, 5);
+  rect(x, OY + 9, 10, 2, 5);
+}
+
+function barra() {
+  const x = cabeza() | 0;
+  rect(14, OY + 3, 150, 8, 3);
+  if (x > 14) rect(14, OY + 3, Math.min(150, x - 14), 8, 1);
+  rect(x, OY + 2, 4, 10, 5);
+  rect(x, OY + 2, 4, 2, 0);
+}
+
+function luz(x) {
+  rect(x, OY, 16, OH, 0);
+  rect(x + 2, OY + 2, 12, OH - 4, 5);
+  rect(x + 5, OY + 5, 6, 4, 1);
+}
+
+function cuerda() {
+  const x = (90 + Math.sin(bg * 2.4) * 8) | 0;
+  for (let i = 0; i < 3; i++) {
+    const a = x - 21 + i * 15;
+    const corto = i < cortes;
+    rect(a, OY + 5, corto ? 6 : 13, 4, 14);
+    if (!corto) rect(a, OY + 5, 13, 1, 15);
+  }
+}
+
+/* El blanco, segun el verbo. Una sola pieza. */
+function objeto() {
+  const v = verbo(actual);
+  if (v === 0) {
+    const x = xLineal(2.8) | 0;
+    if (ESC[actual][2] & 2) ele(x);
+    else bloque(x);
+  } else if (v === 1) {
+    bloque(ox | 0);
+  } else if (v === 2) {
+    barra();
+  } else if (v === 3) {
+    luz(xLineal(1.4) | 0);
+  } else {
+    cuerda();
+  }
+}
+
+function muneco() {
+  const act = pose === 1;
+  const mal = pose === 2;
+  const bob = act ? -6 : mal ? 3 : 0;
+  const y = 250 + bob;
+  const x = 78;
+  const cam = TRAJE[ESC[actual][1]];
+  parte(x + 6, y + 32, 6, 9, 3);
+  parte(x + 16, y + 32, 6, 9, 3);
+  if (act) {
+    parte(x - 1, y - 6, 6, 24, cam);
+    parte(x + 20, y - 6, 6, 24, cam);
+    parte(x - 2, y - 12, 6, 7, 8);
+    parte(x + 21, y - 12, 6, 7, 8);
+  } else if (mal) {
+    parte(x - 8, y + 20, 14, 5, cam);
+    parte(x + 20, y + 20, 14, 5, cam);
+  } else {
+    parte(x - 2, y + 16, 8, 14, cam);
+    parte(x + 20, y + 16, 8, 14, cam);
+  }
+  parte(x + 4, y + 16, 18, 18, cam);
+  parte(x + 6, y + 2, 14, 15, 8);
+  parte(x + 5, y - 1, 16, 6, 0);
+  trazo();
+  rect(x + 4, y + 16, 5, 18, cam + 2);
+  rect(x + 8, y, 6, 2, 14);
+  if (mal) {
+    rect(x + 8, y + 8, 4, 1, 0);
+    rect(x + 15, y + 8, 4, 1, 0);
+  } else {
+    rect(x + 9, y + 7, 2, 2, 0);
+    rect(x + 15, y + 7, 2, 2, 0);
+    rect(x + 11, y + 12, 4, 1, 9);
+  }
+}
+
+function rail() {
+  rect(4, ZY, 172, ZH, 0);
+  rect(6, ZY + 3, 168, ZH - 6, 3);
+}
+
+function bordeZona() {
+  rect(ZX, ZY, ZW, 2, 0);
+  rect(ZX, ZY + ZH - 2, ZW, 2, 0);
+  rect(ZX, ZY, 2, ZH, 0);
+  rect(ZX + ZW - 2, ZY, 2, ZH, 0);
+}
+
+function cartel() {
+  rect(0, 22, W, 16, 0);
+  poner(NOMBRE[verbo(actual)], 25, 5, 2);
+}
+
+function aviso() {
+  const bien = resuelto === 1;
+  rect(50, 130, 80, 16, 0);
+  poner(bien ? "BIEN" : "NO", 133, bien ? 5 : 14, 2);
+}
+
+function marco() {
+  rect(0, 0, W, 22, 1);
+  rect(0, 21, W, 1, 0);
+  for (let i = 0; i < 4; i++) rect(6 + i * 7, 8, 5, 5, i < vidas ? 5 : 0);
+  poner("PITCH", 8, 5, 1);
+  const sc = String(puntos);
+  texto(sc, W - 6 - ancho(sc, 1), 8, 5, 1);
+  rect(0, 22, 2, H - 22, 1);
+  rect(W - 2, 22, 2, H - 22, 1);
+  rect(0, H - 4, W, 4, 1);
+}
+
+/* Interprete de los 5 verbos. No hay un juego por escena. */
+function logica(dt) {
+  const v = verbo(actual);
+  if (resuelto) return;
+  if (v === 1) {
+    const d = (ESC[actual][2] & 1) ? -1 : 1;
+    /* Frenado sigue un poco mas rapido que el fondo. */
+    ox += d * (pulsado ? 24 : 80) * dt;
+    if (pulsado && solapa(ox, 14)) {
+      hold += dt;
+      if (hold >= 0.25) acertar();
+    } else {
+      hold = 0;
+    }
+    if (!resuelto && ((d > 0 && ox > 172) || (d < 0 && ox < -16))) fallar();
+  } else if (v === 2 && cabeza() >= ZX + ZW) {
+    fallar();
+  }
+}
+
+function finTiempo() {
+  if (verbo(actual) === 3) acertar();
+  else fallar();
+}
+
+function paso(dt) {
+  if (fb > 0 && fase !== 2) fb -= dt;
+  if (poseT > 0) {
+    poseT -= dt;
+    if (poseT <= 0) pose = 0;
+  }
+  if (fase === 0) {
+    t += dt;
+    bg += dt;
+    logica(dt);
+    if (t >= durDe(actual)) {
+      if (!resuelto) finTiempo();
+      fase = 1;
+      cierre = fb > 0.12 ? 0.28 : 0.08;
+    }
+  } else if (fase === 1) {
+    bg += dt;
+    cierre -= dt;
+    if (cierre <= 0) {
+      proximo = tomar();
+      fase = 2;
+      tr = 0;
+      noListo = false;
+      snd(2);
+    }
+  } else {
+    tr += dt;
+    if (!noListo && tr >= 0.12 && verbo(proximo) === 3) noListo = true;
+    if (tr >= 0.4) {
+      actual = proximo;
+      preparar();
+      if (falloPendiente) {
+        falloPendiente = false;
+        fallar();
+      }
+      fase = 0;
+    }
+  }
+}
+
+function dibujar() {
+  if (fase === 2 && tr < 0.12) {
+    idx.fill(5);
+  } else if (fase === 2) {
+    idx.fill(0);
+    poner(NOMBRE[verbo(proximo)], 68, 5, 3);
+  } else {
+    idx.fill(3);
+    FONDO[ESC[actual][1]]();
+    rail();
+    rect(ZX, ZY, ZW, ZH, 4);
+    objeto();
+    bordeZona();
+    if (resuelto && fb > 0) aviso();
+    muneco();
+    cartel();
+  }
+  if (fase === 2) {
+    rect(ZX, ZY, ZW, ZH, 4);
+    bordeZona();
+  }
+  marco();
+}
+
+function presentar() {
+  for (let i = 0, n = idx.length; i < n; i++) {
+    const p = idx[i] * 3;
+    const o = i << 2;
+    pixeles[o] = RGB[p];
+    pixeles[o + 1] = RGB[p + 1];
+    pixeles[o + 2] = RGB[p + 2];
+    pixeles[o + 3] = 255;
+  }
+  ctxI.putImageData(imagen, 0, 0);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const esc = Math.max(1, Math.floor(Math.min(window.innerWidth / W, window.innerHeight / H)));
+  if (esc !== escPrev || dpr !== dprPrev) {
+    escPrev = esc;
+    dprPrev = dpr;
+    vista.width = (W * esc * dpr) | 0;
+    vista.height = (H * esc * dpr) | 0;
+    vista.style.width = W * esc + "px";
+    vista.style.height = H * esc + "px";
+    ctxV = vista.getContext("2d", { alpha: false });
+  }
+  ctxV.imageSmoothingEnabled = false;
+  ctxV.drawImage(interno, 0, 0, vista.width, vista.height);
+}
+
+function refrescar() {
+  const ahora = ptrId !== null || tecla;
+  if (ahora === pulsado) return;
+  pulsado = ahora;
+  if (ahora) alBajar();
+  else alSoltar();
+}
+
+function alBajar() {
+  audio();
+  tDown = performance.now();
+  pose = 1;
+  poseT = 0.4;
+  if (fase === 2) {
+    if (noListo && verbo(proximo) === 3) falloPendiente = true;
+    return;
+  }
+  if (fase !== 0) return;
+  gestoLocal = true;
+  if (resuelto) return;
+  const v = verbo(actual);
+  if (v === 0) {
+    if (solapa(xLineal(2.8), 14)) acertar();
+    else fallar();
+  } else if (v === 3) {
+    fallar();
+  }
+}
+
+function alSoltar() {
+  if (fase !== 0 || resuelto) return;
+  const v = verbo(actual);
+  if (v === 2) {
+    if (solapa(cabeza(), 4)) acertar();
+    else fallar();
+  } else if (v === 4 && gestoLocal) {
+    gestoLocal = false;
+    if ((performance.now() - tDown) / 1000 < 0.32) {
+      cortes++;
+      if (cortes >= 3) acertar();
+    }
+  }
+}
+
+addEventListener("pointerdown", function (e) {
+  e.preventDefault();
+  if (ptrId !== null) return;
+  ptrId = e.pointerId;
+  try { e.target.setPointerCapture(e.pointerId); } catch (err) { /* sigue igual */ }
+  refrescar();
+}, { passive: false });
+
+addEventListener("pointerup", function (e) {
+  if (e.pointerId !== ptrId) return;
+  ptrId = null;
+  refrescar();
+});
+
+addEventListener("pointercancel", function (e) {
+  if (e.pointerId !== ptrId) return;
+  ptrId = null;
+  refrescar();
+});
+
+addEventListener("touchmove", function (e) {
+  e.preventDefault();
+}, { passive: false });
+
+addEventListener("keydown", function (e) {
+  if (e.code !== "Space" && e.code !== "Enter") return;
+  e.preventDefault();
+  if (e.repeat || tecla) return;
+  tecla = true;
+  refrescar();
+});
+
+addEventListener("keyup", function (e) {
+  if (e.code !== "Space" && e.code !== "Enter") return;
+  if (!tecla) return;
+  tecla = false;
+  refrescar();
+});
+
+addEventListener("blur", function () {
+  tecla = false;
+  ptrId = null;
+  refrescar();
+});
+
+addEventListener("contextmenu", function (e) {
+  e.preventDefault();
+});
+
+let reloj = performance.now();
+function cuadro(ahora) {
+  let dt = (ahora - reloj) / 1000;
+  reloj = ahora;
+  if (dt > 0.05) dt = 0.05;
+  if (dt < 0) dt = 0;
+  paso(dt);
+  dibujar();
+  presentar();
+  requestAnimationFrame(cuadro);
+}
+
+barajar();
+actual = tomar();
+preparar();
+dibujar();
+presentar();
+requestAnimationFrame(cuadro);
+</script>
+</body>
+</html>
