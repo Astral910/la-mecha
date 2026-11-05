@@ -1,0 +1,1281 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0A0A0A">
+<title>LAGO</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #0A0A0A;
+    overflow: hidden;
+    touch-action: none;
+    overscroll-behavior: none;
+    user-select: none;
+  }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas {
+    touch-action: none;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<canvas id="v"></canvas>
+<script>
+"use strict";
+
+/* LAGO — un verbo: CAZA.
+   El agua es un plano que se aleja. El pato entra chico en el horizonte
+   y crece hasta el aro. Ahí el marco se pone lima y el cartel dice YA.
+   Si te pasas, el aro se pone rojo. Si fallas, sale un perro de los juncos
+   y el pato se va. Un toque en toda la pantalla. Pato y perro propios. */
+
+const W = 180;
+const H = 320;
+const ANILLO_X = 90;
+const ANILLO_Y = 64;
+const HOR = 118;
+const VENTANA0 = 820;
+const DUR0 = 2200;
+const VENTANA_MIN = 180;
+const DUR_MIN = 780;
+const CAMPO_MS = 760;
+const ZOOM_MS = 360;
+const IMPACTO = 920;
+
+/* 0 tinta, 1 muro, 2 línea, 3 azul, 4 azul sombra, 5 azul luz,
+   6 lima, 7 lima sombra, 8 papel, 9 papel sombra, 10 hueco, 11 metal,
+   12 rojo (solo el fallo), 13 agua, 14 pluma, 15 pluma clara. */
+const PAL = new Uint8ClampedArray([
+  10, 10, 10,
+  54, 60, 86,
+  186, 194, 224,
+  43, 53, 255,
+  16, 22, 120,
+  162, 168, 255,
+  215, 255, 58,
+  88, 114, 12,
+  247, 247, 242,
+  150, 152, 144,
+  18, 22, 40,
+  78, 84, 112,
+  255, 59, 92,
+  12, 156, 186,
+  224, 150, 42,
+  255, 214, 156
+]);
+
+const ORDEN = "ABCDEILNOPRTUV0123456789YZ";
+const BITS = [
+  0x699F99, 0xE9E99E, 0x698896, 0xE9999E, 0xF8E88F, 0xF4444F, 0x88888F,
+  0x9DB999, 0x699996, 0xE99E88, 0xE99EA9, 0xF44444, 0x999996, 0x999964,
+  0x69BD96, 0x4C444E, 0x69124F, 0xE16196, 0x26AF22, 0xF8E196, 0x68E996,
+  0xF12444, 0x696996, 0x699716, 0x996222, 0xF1248F
+];
+
+const idx = new Uint8Array(W * H);
+const vista = document.getElementById("v");
+const interno = document.createElement("canvas");
+interno.width = W;
+interno.height = H;
+const ctxInterno = interno.getContext("2d", { alpha: false });
+const imagen = ctxInterno.createImageData(W, H);
+const pixeles = imagen.data;
+let ctxVista = vista.getContext("2d", { alpha: false });
+let escalaPrev = 0;
+let dprPrev = 0;
+let seg = 0;
+let antes = 0;
+let ac = null;
+let master = null;
+let ruido = null;
+const cam = { z: 1, x: 90, y: 150 };
+
+const S = {
+  modo: "titulo",
+  t: 0,
+  vidas: 4,
+  ronda: 0,
+  ventana: VENTANA0,
+  dur: DUR0,
+  cara: "idle",
+  pose: "",
+  juzgado: false,
+  tick: 0,
+  listo: 0,
+  shake: 0,
+  flash: 0,
+  lado: -1,
+  ala: 0,
+  flap: 0,
+  x: 90,
+  y: 80,
+  s: 1,
+  ang: 0
+};
+
+function px(x, y, c) {
+  x |= 0;
+  y |= 0;
+  if (x < 0 || y < 0 || x >= W || y >= H) return;
+  idx[y * W + x] = c;
+}
+
+function lleno(x, y, w, h, c) {
+  x |= 0;
+  y |= 0;
+  w |= 0;
+  h |= 0;
+  if (w <= 0 || h <= 0) return;
+  let x0 = x < 0 ? 0 : x;
+  let y0 = y < 0 ? 0 : y;
+  let x1 = x + w;
+  let y1 = y + h;
+  if (x1 > W) x1 = W;
+  if (y1 > H) y1 = H;
+  if (x1 <= x0 || y1 <= y0) return;
+  for (let yy = y0; yy < y1; yy++) idx.fill(c, yy * W + x0, yy * W + x1);
+}
+
+function marco(x, y, w, h, c) {
+  lleno(x, y, w, 1, c);
+  lleno(x, y + h - 1, w, 1, c);
+  lleno(x, y, 1, h, c);
+  lleno(x + w - 1, y, 1, h, c);
+}
+
+function linea(x0, y0, x1, y1, c) {
+  x0 |= 0;
+  y0 |= 0;
+  x1 |= 0;
+  y1 |= 0;
+  let dx = Math.abs(x1 - x0);
+  let dy = Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1;
+  const sy = y0 < y1 ? 1 : -1;
+  let e = dx - dy;
+  for (;;) {
+    px(x0, y0, c);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = e << 1;
+    if (e2 > -dy) { e -= dy; x0 += sx; }
+    if (e2 < dx) { e += dx; y0 += sy; }
+  }
+}
+
+/* Polígono convexo. El contorno va aparte, para dos tonos. */
+function poly(pts, c) {
+  const n = pts.length >> 1;
+  if (n < 3) return;
+  let y0 = 999;
+  let y1 = -999;
+  for (let i = 0; i < n; i++) {
+    const y = pts[i * 2 + 1];
+    if (y < y0) y0 = y;
+    if (y > y1) y1 = y;
+  }
+  y0 = y0 < 0 ? 0 : y0 | 0;
+  y1 = y1 >= H ? H - 1 : y1 | 0;
+  for (let y = y0; y <= y1; y++) {
+    let xL = 999;
+    let xR = -999;
+    let hit = 0;
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      let yA = pts[i * 2 + 1];
+      let yB = pts[j * 2 + 1];
+      let xA = pts[i * 2];
+      let xB = pts[j * 2];
+      if (yA === yB) continue;
+      if (yA > yB) {
+        const ty = yA; yA = yB; yB = ty;
+        const tx = xA; xA = xB; xB = tx;
+      }
+      if (y < yA || y >= yB) continue;
+      const x = xA + (xB - xA) * ((y - yA) / (yB - yA));
+      if (x < xL) xL = x;
+      if (x > xR) xR = x;
+      hit++;
+    }
+    if (hit < 2) continue;
+    let a = xL | 0;
+    let b = xR | 0;
+    if (a < 0) a = 0;
+    if (b >= W) b = W - 1;
+    if (b >= a) idx.fill(c, y * W + a, y * W + b + 1);
+  }
+}
+
+function borde(pts, c) {
+  const n = pts.length >> 1;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    linea(pts[i * 2], pts[i * 2 + 1], pts[j * 2], pts[j * 2 + 1], c);
+  }
+}
+
+function solido(pts, fill, ink) {
+  poly(pts, fill);
+  if (ink >= 0) borde(pts, ink);
+}
+
+function elipse(cx, cy, rx, ry, c) {
+  if (rx < 0.5 || ry < 0.5) return;
+  const y1 = Math.ceil(ry);
+  const ry2 = ry * ry;
+  for (let y = -y1; y <= y1; y++) {
+    const t = 1 - (y * y) / ry2;
+    if (t <= 0) continue;
+    const ww = Math.sqrt(t) * rx;
+    const yy = (cy + y) | 0;
+    if (yy < 0 || yy >= H) continue;
+    let x0 = (cx - ww) | 0;
+    let x1 = (cx + ww) | 0;
+    if (x0 < 0) x0 = 0;
+    if (x1 >= W) x1 = W - 1;
+    if (x1 >= x0) idx.fill(c, yy * W + x0, yy * W + x1 + 1);
+  }
+}
+
+function ovalo(cx, cy, rx, ry, ang, fill, ink) {
+  if (rx < 0.7 || ry < 0.7) return;
+  const pasos = rx + ry < 7 ? 8 : 12;
+  const co = Math.cos(ang);
+  const si = Math.sin(ang);
+  const pts = [];
+  for (let i = 0; i < pasos; i++) {
+    const a = (i / pasos) * Math.PI * 2;
+    const lx = Math.cos(a) * rx;
+    const ly = Math.sin(a) * ry;
+    pts.push(cx + lx * co - ly * si, cy + lx * si + ly * co);
+  }
+  poly(pts, fill);
+  if (ink >= 0) borde(pts, ink);
+}
+
+function anillo(cx, cy, rx, ry, c, g) {
+  if (rx < 1 || ry < 1) return;
+  const pasos = (Math.max(rx, ry) * 8) | 0;
+  const gr = g < 1 ? 1 : g;
+  for (let i = 0; i < pasos; i++) {
+    const a = (i / pasos) * Math.PI * 2;
+    const co = Math.cos(a);
+    const si = Math.sin(a);
+    for (let k = 0; k < gr; k++) {
+      px(cx + co * (rx - k), cy + si * (ry * (1 - k / Math.max(rx, 1))), c);
+    }
+  }
+}
+
+/* La línea se arquea con el tiempo. No es un trazo fijo. */
+function temblor(x0, y0, x1, y1, c, amp, sombra) {
+  const a = amp == null ? 2 : amp;
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const len = Math.hypot(dx, dy) || 1;
+  const wob = Math.sin(seg * 2.2 + x0 * 0.11 + y0 * 0.05) * a;
+  const mx = (x0 + x1) * 0.5 + (-dy / len) * wob;
+  const my = (y0 + y1) * 0.5 + (dx / len) * wob;
+  linea(x0, y0, mx, my, c);
+  linea(mx, my, x1, y1, c);
+  if (sombra >= 0) {
+    linea(x0, y0 + 1, mx, my + 1, sombra);
+    linea(mx, my + 1, x1, y1 + 1, sombra);
+  }
+}
+
+function forma(x, y, s, ang, pts, fill, ink) {
+  const co = Math.cos(ang);
+  const si = Math.sin(ang);
+  const o = [];
+  for (let i = 0; i < pts.length; i += 2) {
+    const lx = pts[i] * s;
+    const ly = pts[i + 1] * s;
+    o.push(x + lx * co - ly * si, y + lx * si + ly * co);
+  }
+  solido(o, fill, ink);
+}
+
+function local(x, y, s, ang, lx, ly) {
+  const co = Math.cos(ang);
+  const si = Math.sin(ang);
+  return {
+    x: x + (lx * co - ly * si) * s,
+    y: y + (lx * si + ly * co) * s
+  };
+}
+
+function texto(s, x, y, sc, c, sombra) {
+  if (sombra) texto(s, x + sc, y + sc, sc, 0, false);
+  for (let i = 0; i < s.length; i++) {
+    const k = ORDEN.indexOf(s.charAt(i));
+    if (k < 0) continue;
+    const g = BITS[k];
+    const ox = x + i * 5 * sc;
+    for (let row = 0; row < 6; row++) {
+      const bits = (g >> ((5 - row) * 4)) & 15;
+      for (let col = 0; col < 4; col++) {
+        if (bits & (8 >> col)) lleno(ox + col * sc, y + row * sc, sc, sc, c);
+      }
+    }
+  }
+}
+
+function centroTexto(s, y, sc, c) {
+  texto(s, (W - (s.length * 5 * sc - sc)) >> 1, y, sc, c, true);
+}
+
+function grito(s, y, sc, letra, bordeC, fondo) {
+  const w = s.length * 5 * sc - sc;
+  const x = (W - w) >> 1;
+  const h = 6 * sc;
+  lleno(x - 5, y - 4, w + 10, h + 8, fondo);
+  marco(x - 5, y - 4, w + 10, h + 8, bordeC);
+  texto(s, x, y, sc, letra, false);
+}
+
+function estrella(x, y, c) {
+  px(x, y, c);
+  px(x - 1, y, c);
+  px(x + 1, y, c);
+  px(x, y - 1, c);
+  px(x, y + 1, c);
+}
+
+function flujo() {
+  return seg * 0.38;
+}
+
+function yLago(t) {
+  const u = t < 0 ? 0 : t > 1 ? 1 : t;
+  return HOR + Math.pow(u, 1.5) * 182;
+}
+
+function mediaLago(t) {
+  const u = t < 0 ? 0 : t > 1 ? 1 : t;
+  return 86 + Math.pow(u, 0.92) * 120;
+}
+
+function cielo() {
+  lleno(0, 0, W, 42, 4);
+  lleno(0, 42, W, 48, 3);
+  lleno(0, 90, W, HOR - 90 + 2, 5);
+}
+
+function nubes() {
+  const datos = [
+    [8, 18, 15, 0.2],
+    [150, 14, 17, 0.55],
+    [46, 12, 11, 0.85],
+    [118, 16, 10, 1.2]
+  ];
+  for (let i = 0; i < datos.length; i++) {
+    const d = datos[i];
+    const vel = 16 + d[3] * 18;
+    const x = ((d[0] + seg * vel) % (W + 70)) - 34;
+    const y = d[1] + Math.sin(seg * 0.7 + d[3]) * 2.2;
+    nube(x, y, d[2]);
+  }
+}
+
+function nube(x, y, r) {
+  elipse(x + 2, y + 3, r, r * 0.42, 0);
+  elipse(x - r * 0.42 + 1, y + 4, r * 0.6, r * 0.34, 0);
+  elipse(x, y + 1, r * 0.96, r * 0.38, 9);
+  elipse(x - r * 0.4, y + 1, r * 0.55, r * 0.3, 8);
+  elipse(x + r * 0.22, y - r * 0.08, r * 0.42, r * 0.24, 8);
+  elipse(x - r * 0.05, y - r * 0.16, r * 0.2, r * 0.12, 8);
+}
+
+function motas() {
+  for (let i = 0; i < 7; i++) {
+    const x = (16 + i * 24 + Math.sin(seg * 0.8 + i * 1.3) * 10) | 0;
+    const y = (8 + ((seg * 14 + i * 29) % 28)) | 0;
+    if (y > 36) continue;
+    px(x, y, 8);
+    px(x + 1, y, 2);
+  }
+}
+
+function orilla() {
+  for (let x = 0; x < W; x++) {
+    const h = 6 + Math.sin(x * 0.07) * 4 + Math.sin(x * 0.19 + seg * 0.65) * 2.4;
+    const hh = h | 0;
+    lleno(x, HOR - hh, 1, hh + 1, 10);
+    px(x, HOR - hh, 2);
+  }
+  for (let i = 0; i < 16; i++) {
+    const x = 6 + i * 11;
+    const s = Math.sin(seg * 2.3 + i * 0.7) * 1.7;
+    const alto = 5 + (i % 3) * 2;
+    linea(x, HOR - 2, x + s, HOR - 2 - alto, (i & 1) ? 6 : 7);
+    px(x + s, HOR - 3 - alto, 8);
+  }
+}
+
+/* Las losas nacen angostas en el horizonte y se abren al acercarse. */
+function lago() {
+  lleno(0, HOR, W, H - HOR, 4);
+  const shift = flujo();
+  const filas = 7;
+  const cols = 4;
+  const celdas = [];
+  for (let f = 0; f < filas; f++) {
+    const t0 = (f / filas + shift) % 1;
+    let t1 = t0 + 1 / filas;
+    if (t1 > 1) t1 = 1;
+    if (t1 - t0 < 0.015) continue;
+    celdas.push({ t0: t0, t1: t1, f: f });
+  }
+  celdas.sort(function (a, b) { return a.t0 - b.t0; });
+  for (let i = 0; i < celdas.length; i++) {
+    const t0 = celdas[i].t0;
+    const t1 = celdas[i].t1;
+    const y0 = yLago(t0);
+    const y1 = yLago(t1);
+    const a0 = mediaLago(t0);
+    const a1 = mediaLago(t1);
+    const lejos = t0 < 0.3;
+    const medio = t0 < 0.62;
+    for (let c = 0; c < cols; c++) {
+      const u0 = c / cols - 0.5;
+      const u1 = (c + 1) / cols - 0.5;
+      const par = ((c + celdas[i].f) & 1) === 0;
+      const brilla = ((seg * 3.1 + celdas[i].f * 4 + c) | 0) % 11 === 0;
+      let col = 3;
+      if (brilla && t0 > 0.4) col = 5;
+      else if (lejos) col = par ? 4 : 3;
+      else if (medio) col = par ? 3 : 13;
+      else col = par ? 13 : 3;
+      const tapa = [
+        90 + u0 * a0 * 2, y0,
+        90 + u1 * a0 * 2, y0,
+        90 + u1 * a1 * 2, y1,
+        90 + u0 * a1 * 2, y1
+      ];
+      poly(tapa, col);
+      borde(tapa, lejos ? 11 : t0 > 0.72 ? 0 : 4);
+    }
+    temblor(4, y1, W - 4, y1, t0 > 0.55 ? 8 : 5, 1.4 + t1 * 2.8, t0 > 0.55 ? 2 : 11);
+  }
+  temblor(0, HOR, W, HOR, 8, 1.6, 4);
+}
+
+function hojas() {
+  const shift = flujo();
+  const ladoHoja = [-1, 1, -1];
+  for (let i = 0; i < 3; i++) {
+    const t = (shift + 0.16 + i * 0.28) % 1;
+    const y = yLago(t);
+    const x = 90 + ladoHoja[i] * (52 + i * 6) + Math.sin(seg * 0.9 + i) * 3;
+    const s = 0.45 + t * 1.35;
+    const ang = Math.sin(seg * 1.15 + i * 2) * 0.55;
+    forma(x, y, s, ang, [-6, 0, 0, -2.6, 7, 0, 0, 2.4], i === 1 ? 7 : 6, 0);
+    const p = local(x, y, s, ang, -2, 0);
+    const q = local(x, y, s, ang, 4, 0);
+    linea(p.x, p.y, q.x, q.y, 8);
+  }
+}
+
+function espuma() {
+  const shift = flujo();
+  for (let i = 0; i < 8; i++) {
+    const t = (shift * 1.15 + i * 0.12) % 1;
+    const y = yLago(t);
+    const x = 90 + Math.sin(i * 2.2 + seg * 0.4) * (8 + t * 28);
+    const w = 0.8 + t * 2.6;
+    elipse(x, y, w, Math.max(0.6, w * 0.38), i & 1 ? 8 : 5);
+  }
+}
+
+function junco(x, base, alto, fase, claro, nervio) {
+  const n = nervio || 1;
+  const sway = Math.sin(seg * (2.15 + n * 0.25) + fase) * (2.4 + alto * 0.045) * n;
+  const xPunta = x + sway;
+  const yPunta = base - alto;
+  const g = alto > 50 ? 2.4 : 1.5;
+  solido([
+    x - g * 0.3, base,
+    x + g, base,
+    xPunta + g * 0.35, yPunta + alto * 0.24,
+    xPunta - g * 0.15, yPunta + alto * 0.3
+  ], claro ? 7 : 1, 0);
+  solido([
+    xPunta - 1, yPunta + alto * 0.18,
+    xPunta + 1, yPunta + 5,
+    xPunta + 8 + sway * 0.08, yPunta - 1,
+    xPunta + 2, yPunta + alto * 0.1
+  ], claro ? 6 : 7, 0);
+  if (alto > 48) {
+    const yM = base - alto * 0.46;
+    const xM = x + sway * 0.42;
+    solido([
+      xM, yM,
+      xM + 1, yM - 3,
+      xM + 11, yM - 8,
+      xM + 3, yM + 2
+    ], claro ? 6 : 7, 0);
+  }
+}
+
+function nervioJuncos() {
+  if (S.modo === "impacto" && (S.pose === "pronto" || S.pose === "tarde")) return 2.3;
+  if (S.cara === "feliz") return 1.35;
+  if (S.cara === "cruz") return 0.55;
+  return 1;
+}
+
+function juncosMedios() {
+  const n = nervioJuncos();
+  junco(14, 232, 46, 0.4, 0, n);
+  junco(28, 224, 34, 1.4, 1, n);
+  junco(152, 228, 42, 0.8, 1, n);
+  junco(166, 220, 32, 1.9, 0, n);
+}
+
+function juncosFrente() {
+  const n = nervioJuncos();
+  junco(-2, 336, 108, 0.2, 1, n);
+  junco(14, 348, 96, 1.1, 1, n);
+  junco(30, 332, 74, 2.0, 0, n);
+  junco(154, 340, 102, 0.55, 1, n);
+  junco(170, 352, 92, 1.45, 1, n);
+  junco(186, 334, 70, 2.3, 0, n);
+  junco(62, 330, 46, 0.7, 0, n);
+  junco(88, 336, 50, 1.5, 1, n);
+  junco(114, 328, 42, 2.2, 0, n);
+}
+
+function fase() {
+  const c = S.dur * 0.58;
+  const m = S.ventana * 0.5;
+  const aviso = Math.min(130, S.ventana * 0.4);
+  if (Math.abs(S.t - c) <= m) return 2;
+  if (S.t >= c - m - aviso && S.t < c - m) return 1;
+  if (S.t > c + m) return 3;
+  return 0;
+}
+
+function faseVisual() {
+  if (S.modo === "impacto") {
+    if (S.pose === "bien") return 2;
+    if (S.pose === "tarde") return 3;
+    return 0;
+  }
+  if (S.modo === "juego") return fase();
+  return 0;
+}
+
+function enZona() {
+  return Math.abs(S.t - S.dur * 0.58) <= S.ventana * 0.5;
+}
+
+/* Misma frontera que el cartel: dentro del aro solo mientras YA está encendido. */
+function posicion() {
+  const c = S.dur * 0.58;
+  const m = S.ventana * 0.5;
+  const entra = c - m;
+  const sale = c + m;
+  const lado = S.lado || -1;
+  if (S.t < entra) {
+    const t = entra > 1 ? S.t / entra : 1;
+    const e = t * t;
+    return {
+      x: 90 + lado * (36 - e * 22),
+      y: (HOR - 8) + (78 - (HOR - 8)) * e,
+      s: 0.22 + e * 0.64,
+      ang: lado * -0.45 * (1 - e),
+      st: 0.06 + e * 0.28
+    };
+  }
+  if (S.t <= sale) {
+    const den = Math.max(1, sale - entra);
+    const t = (S.t - entra) / den;
+    return {
+      x: 90 + lado * (14 - t * 22),
+      y: 78 - t * 24,
+      s: 0.86 + t * 0.22,
+      ang: lado * -0.05,
+      st: 0.34 + t * 0.24
+    };
+  }
+  const den = Math.max(1, S.dur - sale);
+  const t = Math.min(1, (S.t - sale) / den);
+  const e = 1 - (1 - t) * (1 - t);
+  return {
+    x: 90 - lado * 8 - lado * e * 12,
+    y: 54 - e * 16,
+    s: 1.08 + e * 0.18,
+    ang: lado * 0.35 * e,
+    st: 0.6 + e * 0.28
+  };
+}
+
+function vueloCaida() {
+  const k = Math.min(1, S.t / 700);
+  const yFin = yLago(0.74);
+  return {
+    k: k,
+    x: S.x + (S.lado || -1) * k * 4,
+    y: S.y + k * k * (yFin - S.y),
+    s: Math.max(0.45, S.s * (1 - k * 0.16)),
+    ang: (S.ang || 0) + k * 3.15 * (S.lado || -1),
+    splash: Math.max(0, (S.t - 460) / 360)
+  };
+}
+
+function vueloHuida() {
+  const k = Math.min(1, S.t / IMPACTO);
+  const e = 1 - (1 - k) * (1 - k);
+  const lado = S.lado || -1;
+  if (S.pose === "pronto") {
+    return {
+      x: S.x + lado * e * 48,
+      y: S.y + e * 18,
+      s: Math.max(0.12, S.s * (1 - e * 0.55)),
+      ang: lado * -0.7 * e
+    };
+  }
+  return {
+    x: S.x - lado * e * 38,
+    y: S.y - e * 48,
+    s: S.s * (1 + e * 0.06),
+    ang: lado * 0.9 * e
+  };
+}
+
+/* Pico de pala, cresta y dos ojos. Alas en dos poses. No es el pato de cartucho. */
+function pato(x, y, s, ala, ang) {
+  const bob = (ala ? -2 : 2) * s;
+  const yy = y + bob;
+  if (ala) {
+    forma(x, yy, s, ang, [-6, -1, -9, -22, -16, -2], 14, 0);
+    forma(x, yy, s, ang, [6, -1, 11, -24, 18, -1], 15, 0);
+    forma(x, yy, s, ang, [-6, -2, -8, -14, -13, -2], 15, -1);
+    forma(x, yy, s, ang, [6, -2, 10, -15, 15, -2], 8, -1);
+  } else {
+    forma(x, yy, s, ang, [-4, 2, -26, 5, -20, 11], 14, 0);
+    forma(x, yy, s, ang, [4, 2, 28, 6, 22, 12], 15, 0);
+    forma(x, yy, s, ang, [-5, 3, -16, 6, -12, 10], 15, -1);
+    forma(x, yy, s, ang, [5, 3, 18, 7, 14, 11], 8, -1);
+  }
+  forma(x, yy, s, ang, [-3, 2, -13, 6, -9, 0], 14, 0);
+  ovalo(x, yy, 12 * s, 8 * s, ang, 14, 0);
+  const panza = local(x, yy, s, ang, 1, 3);
+  ovalo(panza.x, panza.y, 7 * s, 3.8 * s, ang, 15, -1);
+  const h = local(x, yy, s, ang, 7, -8);
+  ovalo(h.x, h.y, 6 * s, 5.4 * s, ang, 14, 0);
+  const cap = local(x, yy, s, ang, 5, -11);
+  ovalo(cap.x, cap.y, 3.4 * s, 2 * s, ang, 10, -1);
+  forma(x, yy, s, ang, [4, -11, 2, -17, 8, -12], 15, 0);
+  forma(x, yy, s, ang, [7, -10, 9, -16, 12, -11], 8, 0);
+  forma(x, yy, s, ang, [11, -8, 19, -7, 17, -4], 9, 0);
+  forma(x, yy, s, ang, [11, -5, 17, -4, 15, -2], 15, 0);
+  const e1 = local(x, yy, s, ang, 4, -9);
+  const e2 = local(x, yy, s, ang, 8, -8);
+  const er = Math.max(0.8, 1.25 * s);
+  ovalo(e1.x, e1.y, er, er, 0, 8, 0);
+  ovalo(e2.x, e2.y, er, er, 0, 8, 0);
+  px(e1.x, e1.y, 0);
+  px(e2.x, e2.y, 0);
+}
+
+function sombraEn(st, x) {
+  const y = yLago(st);
+  const rx = 3.2 + st * 18;
+  elipse(x, y + 1, rx, Math.max(1.3, rx * 0.3), 0);
+  elipse(x, y, rx * 0.6, Math.max(1, rx * 0.16), 10);
+}
+
+function sombraPato() {
+  if (S.modo === "impacto" && S.pose === "bien") {
+    const k = Math.min(1, S.t / 700);
+    const y = yLago(0.74);
+    elipse(90, y, 5 + k * 13, 2 + k * 3.2, 0);
+    elipse(90, y, 3 + k * 8, 1.2 + k * 2, 10);
+    return;
+  }
+  if (S.modo === "impacto" && S.pose === "pronto") {
+    const k = Math.min(1, S.t / IMPACTO);
+    sombraEn(Math.max(0.06, 0.28 - k * 0.18), S.x + (S.lado || -1) * k * 18);
+    return;
+  }
+  if (S.modo === "impacto") {
+    sombraEn(0.66, 90 - (S.lado || -1) * Math.min(1, S.t / IMPACTO) * 10);
+    return;
+  }
+  const p = posicion();
+  sombraEn(p.st, 90 + (p.x - 90) * 0.55);
+}
+
+function salpicar(p, x, y) {
+  if (p <= 0) return;
+  anillo(x, y, 4 + p * 24, 2 + p * 7, 8, 2);
+  anillo(x, y + 1, 2 + p * 13, 1.2 + p * 3.4, 5, 1);
+  for (let i = 0; i < 7; i++) {
+    const a = -2.7 + i * 0.42;
+    const r = p * (8 + (i % 3) * 6);
+    const yy = y + Math.sin(a) * r * 0.42 - (1 - p) * 12;
+    const c = i & 1 ? 8 : 15;
+    px(x + Math.cos(a) * r, yy, c);
+    px(x + Math.cos(a) * r + 1, yy, c);
+  }
+}
+
+function plumas(x, y, k) {
+  for (let i = 0; i < 6; i++) {
+    const a = seg * 3.2 + i * 1.05;
+    const r = 7 + k * 22 + (i % 3) * 3;
+    const fx = x + Math.cos(a) * r;
+    const fy = y + Math.sin(a) * r * 0.65;
+    lleno(fx, fy, 2, 2, i & 1 ? 14 : 15);
+    estrella(x + Math.cos(a + 0.6) * (r + 4), y + Math.sin(a + 0.6) * (r * 0.5), i & 1 ? 6 : 8);
+  }
+}
+
+function estela(x, y) {
+  const lado = S.lado || -1;
+  for (let i = 0; i < 3; i++) {
+    const y0 = y - 4 + i * 6;
+    temblor(x + lado * 8, y0, x + lado * 28, y0 + 2, 2, 0.7, -1);
+  }
+}
+
+function dibujarPato() {
+  if (S.modo === "impacto" && S.pose === "bien") {
+    const v = vueloCaida();
+    pato(v.x, v.y, v.s, 0, v.ang);
+    salpicar(v.splash, 90, yLago(0.74));
+    plumas(v.x, v.y, v.k);
+    return;
+  }
+  if (S.modo === "impacto") {
+    const v = vueloHuida();
+    pato(v.x, v.y, v.s, S.ala, v.ang);
+    if (S.pose === "tarde") estela(v.x, v.y);
+    return;
+  }
+  const p = posicion();
+  pato(p.x, p.y, p.s, S.ala, p.ang);
+}
+
+/* Orejas caídas y hocico largo. Solo existe en el fallo. */
+function perro(x, y, dir) {
+  function X(lx) { return x + lx * dir; }
+  const wag = Math.sin(seg * 8.2) * 7;
+  solido([
+    X(-4), y + 16,
+    X(-20), y + 6 + wag,
+    X(-16), y + 18 + wag * 0.3,
+    X(-2), y + 24
+  ], 8, 0);
+  solido([
+    X(-12), y + 8,
+    X(8), y + 6,
+    X(6), y + 34,
+    X(-14), y + 36
+  ], 8, 0);
+  ovalo(X(-2), y + 18, 4.2, 3.2, 0, 0, -1);
+  solido([
+    X(2), y + 18,
+    X(16), y + 14,
+    X(14), y + 26,
+    X(0), y + 26
+  ], 8, 0);
+  ovalo(X(14), y + 22, 3.2, 2.4, 0, 9, 0);
+  /* Orejas largas, oscuras, que cuelgan por debajo del hocico. */
+  solido([
+    X(-14), y - 8,
+    X(-4), y - 12,
+    X(-10), y + 30,
+    X(-22), y + 34
+  ], 0, -1);
+  ovalo(X(-16), y + 30, 6, 4, 0.3, 0, -1);
+  solido([
+    X(-16), y - 6,
+    X(-6), y - 10,
+    X(-12), y + 26,
+    X(-22), y + 28
+  ], 10, 0);
+  solido([
+    X(2), y - 10,
+    X(12), y - 4,
+    X(8), y + 32,
+    X(-1), y + 24
+  ], 0, -1);
+  solido([
+    X(3), y - 8,
+    X(10), y - 4,
+    X(6), y + 28,
+    X(0), y + 20
+  ], 10, 0);
+  linea(X(6), y + 2, X(4), y + 22, 8);
+  ovalo(X(1), y, 13, 11, 0, 8, 0);
+  ovalo(X(-3), y - 2, 4, 3, 0.2, 0, -1);
+  solido([
+    X(8), y - 2,
+    X(34), y + 1,
+    X(32), y + 11,
+    X(8), y + 9
+  ], 8, 0);
+  solido([
+    X(12), y + 5,
+    X(30), y + 7,
+    X(28), y + 11,
+    X(10), y + 9
+  ], 9, -1);
+  ovalo(X(31), y + 5, 3.6, 2.8, 0, 0, -1);
+  px(X(30), y + 4, 5);
+  ovalo(X(5), y - 2, 2.2, 2.2, 0, 0, -1);
+  px(X(5), y - 2, 8);
+  linea(X(2), y - 6, X(9), y - 5, 0);
+  solido([
+    X(14), y + 7,
+    X(24), y + 6,
+    X(22), y + 12,
+    X(13), y + 11
+  ], 10, 0);
+  px(X(18), y + 9, 8);
+  const cuelloA = X(-9);
+  const cuelloB = X(8);
+  lleno(Math.min(cuelloA, cuelloB), y + 12, Math.abs(cuelloB - cuelloA), 3, 11);
+}
+
+function dibujarPerro() {
+  const k = Math.min(1, S.t / 280);
+  const e = 1 - (1 - k) * (1 - k);
+  const bob = Math.sin(seg * 7) * 2 * e;
+  const y = 322 - e * 74 + bob;
+  perro(92, y, S.lado || -1);
+}
+
+function hayPerro() {
+  return S.modo === "impacto" && (S.pose === "pronto" || S.pose === "tarde");
+}
+
+function mira(f) {
+  const on = f === 2;
+  const late = f >= 3;
+  const pulso = on ? Math.sin(seg * 16) * 2.2 : f === 1 ? Math.sin(seg * 28) * 1.4 : 0;
+  const rx = 34 + pulso;
+  const ry = 22 + pulso * 0.55;
+  const c = late ? 12 : on ? 6 : f === 1 ? 8 : 2;
+  anillo(ANILLO_X, ANILLO_Y, rx + 1, ry + 1, 0, 1);
+  anillo(ANILLO_X, ANILLO_Y, rx, ry, c, on ? 3 : 2);
+  const x = ANILLO_X;
+  const y = ANILLO_Y;
+  linea(x, y - ry - 6, x, y - ry - 1, c);
+  linea(x, y + ry + 1, x, y + ry + 6, c);
+  linea(x - rx - 6, y, x - rx - 1, y, c);
+  linea(x + rx + 1, y, x + rx + 6, y, c);
+}
+
+/* La lámpara acompaña al aro: lima en la zona, roja si te pasas. */
+function farol(f) {
+  const x = S.lado > 0 ? 26 : 154;
+  const y = 174 + Math.sin(seg * 1.7) * 1.4;
+  temblor(x, y + 5, x + Math.sin(seg * 1.4) * 1.2, y + 38, 0, 0.35, 11);
+  let c = 11;
+  if (f >= 3) c = 12;
+  else if (f === 2) c = 6;
+  else if (f === 1) c = ((seg * 10) | 0) % 2 ? 5 : 11;
+  ovalo(x, y, 7, 6, 0, 0, -1);
+  ovalo(x, y, 4.6, 3.8, 0, c, -1);
+  if (f === 2) px(x, y - 1, 8);
+  linea(x - 5, y - 5, x + 5, y - 6, 8);
+  linea(x - 5, y - 5, x + 5, y - 5, 0);
+}
+
+function rizo() {
+  const p = Math.min(1, S.t / CAMPO_MS);
+  const y = yLago(0.74);
+  anillo(90, y, 6 + p * 28, 2.2 + p * 8, 8, 1);
+  anillo(90, y + 2, 3 + p * 14, 1.2 + p * 4, 5, 1);
+}
+
+function marcoEscena() {
+  cielo();
+  nubes();
+  motas();
+  orilla();
+  lago();
+  hojas();
+  espuma();
+  if (S.modo === "juego" || S.modo === "impacto") sombraPato();
+  if (S.modo === "campo" && S.cara === "feliz") rizo();
+  juncosMedios();
+  if (S.modo === "zoom" || S.modo === "juego" || S.modo === "impacto") mira(faseVisual());
+  farol(faseVisual());
+  if (S.modo === "juego" || S.modo === "impacto") dibujarPato();
+  if (hayPerro()) dibujarPerro();
+  juncosFrente();
+  interfaz();
+}
+
+function vidas(x, y) {
+  for (let i = 0; i < 4; i++) {
+    const xx = x + i * 12;
+    const viva = i < S.vidas;
+    const alerta = !viva && i === S.vidas && S.cara === "cruz" && S.t < 420 && ((S.t / 90) | 0) % 2 === 0;
+    if (viva || alerta) {
+      lleno(xx, y, 8, 8, 6);
+      marco(xx, y, 8, 8, 0);
+      px(xx + 2, y + 2, 8);
+    } else {
+      marco(xx, y, 8, 8, 11);
+      linea(xx + 1, y + 1, xx + 6, y + 6, 11);
+      linea(xx + 6, y + 1, xx + 1, y + 6, 11);
+    }
+  }
+}
+
+function barra(f) {
+  if (f === 2) {
+    lleno(0, H - 9, W, 9, 6);
+    lleno(0, H - 9, W, 2, 8);
+  } else if (f === 3) {
+    lleno(0, H - 9, W, 9, 12);
+    lleno(0, H - 9, W, 2, 8);
+  } else if (f === 1) {
+    lleno(0, H - 6, W, 6, 11);
+  }
+}
+
+function cartelJuego(f) {
+  if (f === 2) {
+    grito("YA", 266, 4, 0, 8, 6);
+    return;
+  }
+  const tarde = f === 3;
+  const slam = S.t < 150 && !tarde;
+  grito(
+    "CAZA",
+    slam ? 262 : 274,
+    slam ? 4 : 3,
+    tarde ? 12 : 8,
+    tarde ? 12 : slam ? 6 : 2,
+    0
+  );
+}
+
+function cartelImpacto() {
+  if (S.pose === "bien") grito("BIEN", 262, 4, 0, 8, 6);
+  else if (S.pose === "pronto") grito("PRONTO", 274, 3, 8, 5, 0);
+  else grito("TARDE", 274, 3, 8, 12, 0);
+}
+
+function interfaz() {
+  vidas(6, 6);
+  if (S.ronda > 0 && S.modo !== "fin") texto(String(S.ronda), 156, 6, 2, 6, true);
+  if (S.modo === "titulo") grito("TOCA", 274, 3, 6, 8, 0);
+  if (S.modo === "fin") {
+    centroTexto(String(S.ronda), 28, 3, 8);
+    grito("OTRA", 274, 3, 0, 8, 6);
+  }
+  if (S.modo === "juego") cartelJuego(fase());
+  if (S.modo === "impacto") cartelImpacto();
+  if (S.modo === "juego" || S.modo === "impacto") barra(faseVisual());
+}
+
+/* Cada acierto aprieta. La ventana no baja de 180 ms. */
+function acelerar() {
+  S.ventana = Math.max(VENTANA_MIN, (S.ventana * 0.78) | 0);
+  S.dur = Math.max(DUR_MIN, (S.dur * 0.88) | 0);
+}
+
+function asegurar() {
+  if (ac) {
+    if (ac.state === "suspended") ac.resume();
+    return;
+  }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  try { ac = new AC(); } catch (e) { return; }
+  master = ac.createGain();
+  master.gain.value = 0.22;
+  master.connect(ac.destination);
+  const n = (ac.sampleRate * 0.08) | 0;
+  ruido = ac.createBuffer(1, n, ac.sampleRate);
+  const d = ruido.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+}
+
+function tono(freq, dur, tipo, vol, cuando, destino) {
+  if (!ac) return;
+  const t = cuando == null ? ac.currentTime : cuando;
+  const o = ac.createOscillator();
+  const g = ac.createGain();
+  o.type = tipo;
+  o.frequency.setValueAtTime(Math.max(40, freq), t);
+  if (destino) o.frequency.exponentialRampToValueAtTime(Math.max(40, destino), t + dur);
+  g.gain.setValueAtTime(Math.max(0.001, vol), t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g);
+  g.connect(master);
+  o.start(t);
+  o.stop(t + dur + 0.02);
+}
+
+function ruidoCorto(tipo, hz, dur, vol) {
+  if (!ac || !ruido) return;
+  const src = ac.createBufferSource();
+  src.buffer = ruido;
+  const f = ac.createBiquadFilter();
+  f.type = tipo;
+  f.frequency.value = hz;
+  const g = ac.createGain();
+  const t = ac.currentTime;
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  src.connect(f);
+  f.connect(g);
+  g.connect(master);
+  src.start(t);
+  src.stop(t + dur + 0.02);
+}
+
+function chasquido() {
+  ruidoCorto("highpass", 700, 0.07, 0.4);
+}
+
+function aleteo() {
+  const cerca = S.modo === "juego" ? Math.min(1, S.t / S.dur) : 0.4;
+  ruidoCorto("bandpass", 880 + cerca * 1400, 0.045, 0.16);
+}
+
+function golpeAgua() {
+  ruidoCorto("lowpass", 380, 0.16, 0.42);
+  tono(170, 0.1, "sine", 0.12, null, 60);
+}
+
+function fanfarria() {
+  if (!ac) return;
+  const t = ac.currentTime;
+  chasquido();
+  tono(523, 0.08, "square", 0.16, t);
+  tono(659, 0.08, "square", 0.16, t + 0.07);
+  tono(784, 0.16, "square", 0.18, t + 0.14);
+}
+
+function falloSonido() {
+  chasquido();
+  tono(420, 0.08, "square", 0.1, null, 180);
+  tono(170, 0.26, "sawtooth", 0.15, null, 48);
+}
+
+function guardarVuelo() {
+  const p = posicion();
+  S.x = p.x;
+  S.y = p.y;
+  S.s = p.s;
+  S.ang = p.ang;
+}
+
+function ganar() {
+  guardarVuelo();
+  S.juzgado = true;
+  S.pose = "bien";
+  S.modo = "impacto";
+  S.t = 0;
+  S.cara = "feliz";
+  S.ronda++;
+  S.shake = 8;
+  S.flash = 1;
+  acelerar();
+  golpeAgua();
+  fanfarria();
+}
+
+function perder(tipo) {
+  if (S.juzgado) return;
+  guardarVuelo();
+  S.juzgado = true;
+  S.pose = tipo;
+  S.modo = "impacto";
+  S.t = 0;
+  S.cara = "cruz";
+  S.vidas--;
+  S.shake = 8;
+  falloSonido();
+}
+
+function salir() {
+  S.shake = 4;
+  if (S.vidas <= 0) {
+    S.modo = "fin";
+    S.t = 0;
+    tono(98, 0.3, "square", 0.18, null, 42);
+    return;
+  }
+  S.modo = "campo";
+  S.t = 0;
+  tono(S.cara === "feliz" ? 720 : 150, 0.08, "square", 0.12);
+}
+
+function reiniciar() {
+  S.modo = "campo";
+  S.t = 0;
+  S.vidas = 4;
+  S.ronda = 0;
+  S.ventana = VENTANA0;
+  S.dur = DUR0;
+  S.cara = "idle";
+  S.pose = "";
+  S.juzgado = false;
+  tono(210, 0.1, "sine", 0.12);
+}
+
+function pulso(e) {
+  if (e && e.preventDefault) e.preventDefault();
+  asegurar();
+  if (S.modo === "titulo") {
+    S.modo = "campo";
+    S.t = 0;
+    tono(230, 0.09, "sine", 0.14);
+    return;
+  }
+  if (S.modo === "fin") {
+    reiniciar();
+    return;
+  }
+  if (S.modo === "juego" && !S.juzgado) {
+    if (enZona()) ganar();
+    else perder(S.t < S.dur * 0.58 ? "pronto" : "tarde");
+  }
+}
+
+function presentar() {
+  for (let i = 0, n = idx.length; i < n; i++) {
+    const p = idx[i] * 3;
+    const o = i << 2;
+    pixeles[o] = PAL[p];
+    pixeles[o + 1] = PAL[p + 1];
+    pixeles[o + 2] = PAL[p + 2];
+    pixeles[o + 3] = 255;
+  }
+  ctxInterno.putImageData(imagen, 0, 0);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const escala = Math.max(1, Math.floor(Math.min(window.innerWidth / W, window.innerHeight / H)));
+  if (escala !== escalaPrev || dpr !== dprPrev) {
+    escalaPrev = escala;
+    dprPrev = dpr;
+    vista.width = Math.floor(W * escala * dpr);
+    vista.height = Math.floor(H * escala * dpr);
+    vista.style.width = W * escala + "px";
+    vista.style.height = H * escala + "px";
+    ctxVista = vista.getContext("2d", { alpha: false });
+  }
+  ctxVista.imageSmoothingEnabled = false;
+  if (S.flash > 0) {
+    S.flash--;
+    ctxVista.fillStyle = "#F7F7F2";
+    ctxVista.fillRect(0, 0, vista.width, vista.height);
+    return;
+  }
+  const z = cam.z > 1 ? cam.z : 1;
+  const sw = W / z;
+  const sh = H / z;
+  let sx0 = cam.x - sw * 0.5;
+  let sy0 = cam.y - sh * 0.5;
+  if (sx0 < 0) sx0 = 0;
+  if (sy0 < 0) sy0 = 0;
+  if (sx0 > W - sw) sx0 = W - sw;
+  if (sy0 > H - sh) sy0 = H - sh;
+  const j = S.shake ? ((Math.random() * 5) | 0) - 2 : 0;
+  const k = S.shake ? ((Math.random() * 5) | 0) - 2 : 0;
+  ctxVista.fillStyle = "#0A0A0A";
+  ctxVista.fillRect(0, 0, vista.width, vista.height);
+  ctxVista.drawImage(
+    interno,
+    sx0, sy0, sw, sh,
+    j * escala * dpr, k * escala * dpr,
+    vista.width, vista.height
+  );
+}
+
+function cuadro(ahora) {
+  if (!antes) antes = ahora;
+  const dt = Math.min(34, ahora - antes);
+  antes = ahora;
+  seg += dt / 1000;
+  S.t += dt;
+  if (S.modo === "campo" && S.t >= CAMPO_MS) {
+    S.lado = (S.ronda & 1) ? 1 : -1;
+    S.modo = "zoom";
+    S.t = 0;
+    S.shake = 5;
+    chasquido();
+  } else if (S.modo === "zoom" && S.t >= ZOOM_MS) {
+    S.modo = "juego";
+    S.t = 0;
+    S.juzgado = false;
+    S.tick = 0;
+    S.listo = 0;
+    S.pose = "";
+    S.flash = 1;
+    S.ala = 0;
+    S.flap = 0;
+    tono(300, 0.06, "square", 0.14);
+    chasquido();
+  } else if (S.modo === "juego") {
+    const f = fase();
+    if (f === 1 && !S.listo) {
+      S.listo = 1;
+      tono(494, 0.045, "sine", 0.1);
+    }
+    if (f === 2 && !S.tick) {
+      S.tick = 1;
+      tono(988, 0.035, "square", 0.16);
+      S.shake = 4;
+    }
+    if (S.t >= S.dur && !S.juzgado) perder("tarde");
+  } else if (S.modo === "impacto" && S.t >= IMPACTO) {
+    salir();
+  }
+  if (S.modo === "juego" || (S.modo === "impacto" && S.pose !== "bien")) {
+    S.flap += dt;
+    const paso = S.modo === "juego" && fase() === 2 ? 68 : 118;
+    if (S.flap >= paso) {
+      S.flap = 0;
+      S.ala ^= 1;
+      aleteo();
+    }
+  }
+  if (S.shake > 0) S.shake--;
+  cam.z = 1;
+  cam.x = 90;
+  cam.y = 150;
+  if (S.modo === "zoom") {
+    const k = Math.min(1, S.t / ZOOM_MS);
+    cam.z = 1 + k * k * 0.8;
+    cam.x = ANILLO_X;
+    cam.y = ANILLO_Y + 8;
+  } else if (S.modo === "impacto" && S.pose === "bien") {
+    const v = vueloCaida();
+    const q = Math.sin(Math.min(1, S.t / IMPACTO) * Math.PI);
+    cam.z = 1 + q * 0.2;
+    cam.x = v.x;
+    cam.y = v.y;
+  }
+  idx.fill(4);
+  marcoEscena();
+  presentar();
+  requestAnimationFrame(cuadro);
+}
+
+addEventListener("pointerdown", pulso, { passive: false });
+addEventListener("keydown", function (ev) {
+  if (ev.repeat) return;
+  if (ev.code === "Space" || ev.code === "Enter") pulso(ev);
+});
+addEventListener("contextmenu", function (ev) { ev.preventDefault(); });
+addEventListener("touchmove", function (ev) { ev.preventDefault(); }, { passive: false });
+requestAnimationFrame(cuadro);
+</script>
+</body>
+</html>
