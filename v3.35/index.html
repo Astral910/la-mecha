@@ -512,29 +512,52 @@ function nubesCerca() {
   ], scroll.nube);
 }
 
-/* Dos trazos. Van despacio y quedan detrás de los volcanes. */
-function pajaro(wx, wy, esc, ala) {
-  const x = camX(wx);
-  const y = camY(wy);
-  const s = esc * cam.z;
-  const w = 8 * s;
-  const al = (2.2 + ala) * s;
-  linea(x - w, y - al, x, y + al * 0.2, 0);
-  linea(x, y + al * 0.2, x + w, y - al, 0);
+/* Pájaro de perfil: cuerpo, cola y un ala gorda que sube o baja. */
+function pajaro(wx, wy, esc, arriba, dir) {
+  const z = esc * cam.z;
+  function X(lx) { return camX(wx + lx * esc * dir); }
+  function Y(ly) { return camY(wy + ly * esc); }
+  function pts(lista) {
+    const o = [];
+    for (let i = 0; i < lista.length; i += 2) o.push(X(lista[i]), Y(lista[i + 1]));
+    return o;
+  }
+  poly(pts([-2.0, -1.35, -8.8, -3.5, -7.2, -0.35, -2.2, 0.2]), 0);
+  poly(pts([-2.0, 0.25, -8.5, 3.4, -7.0, 0.45, -2.2, 1.25]), 0);
+  if (arriba) solido(pts([2.2, -1.7, 1.3, -8.6, -2.7, -7.5, -2.1, -1.15]), 1, 0);
+  else solido(pts([2.2, 1.5, 1.3, 8.4, -2.7, 7.3, -2.1, 1.05]), 1, 0);
+  elipse(X(0.15), Y(0.15), 4.2 * z, 2.45 * z, 0);
+  elipse(X(0.5), Y(1.0), 2.25 * z, 1.1 * z, 9);
+  elipse(X(3.45), Y(-1.2), 2.15 * z, 1.8 * z, 0);
+  elipse(X(6.75), Y(-0.75), 2.05 * z, 1.15 * z, 0);
+  elipse(X(6.6), Y(-0.85), 1.35 * z, 0.62 * z, 14);
+  px(X(4.05), Y(-1.6), 8);
+  if (arriba) poly(pts([0.85, -2.9, 0.45, -7.0, -1.45, -6.3, -1.05, -2.7]), 8);
+  else poly(pts([0.85, 2.7, 0.45, 6.8, -1.45, 6.1, -1.05, 2.5]), 8);
 }
 
+/* Cuatro, lejos y a distintas alturas. El cuerpo queda bajo el sol. */
 function pajaros() {
   const banda = [
-    [24, 48, 1.15, 6],
-    [108, 62, 1, 5],
-    [164, 42, 1.25, 7]
+    [16, 72, 1.05, 7.4, 0.3, 1, 5.5],
+    [90, 84, 0.96, 8.2, 2.2, -1, 9.2],
+    [164, 78, 1.14, 6.7, 1.15, 1, 4.3],
+    [238, 90, 1.02, 7.9, 3.4, -1, 7.7]
   ];
+  const ciclo = 276;
   for (let i = 0; i < banda.length; i++) {
     const d = banda[i];
-    let x = d[0] + seg * d[3];
-    x = ((x % 280) + 280) % 280 - 36;
-    const y = d[1] + Math.sin(seg * 0.6 + i) * 1.4;
-    pajaro(x, y, d[2], Math.sin(seg * 2.1 + i * 1.3));
+    let x = d[0] + seg * d[3] * d[5];
+    x = ((x % ciclo) + ciclo) % ciclo - 42;
+    let y = d[1] + Math.sin(seg * 0.3 + d[4]) * 1.1;
+    const dx = x - 46;
+    const rr = 40 * 40 - dx * dx;
+    if (rr > 0) {
+      const piso = 46 + Math.sqrt(rr);
+      if (y < piso) y = piso;
+    }
+    if (y > 91) y = 91;
+    pajaro(x, y, d[2], Math.sin(seg * d[6] + d[4]) >= 0, d[5]);
   }
 }
 
@@ -546,16 +569,6 @@ function polen() {
     const y = 36 + (i * 8) % 28;
     px(camX(x), camY(y), i & 1 ? 8 : 2);
   }
-}
-
-/* Copa redonda: dos verdes y contorno de 1 px. Escala con la cámara. */
-function copa(wx, wy, rx, ry, base, luz) {
-  const x = camX(wx);
-  const y = camY(wy);
-  const z = cam.z;
-  elipse(x, y, rx * z + 1, ry * z + 1, 0);
-  elipse(x, y, rx * z, ry * z, base);
-  elipse(x - rx * 0.28 * z, y - ry * 0.24 * z, rx * 0.55 * z, ry * 0.48 * z, luz);
 }
 
 /* Tramo de corteza. gb y gc son el medio ancho abajo y arriba. */
@@ -582,38 +595,218 @@ function tramo(x0, y0, x1, y1, gb, gc) {
   borde(o, 0);
 }
 
-/* Sombra abajo y brillo arriba, para que las copas se lean juntas. */
-function masaCopa(wx, wy, rx, ry) {
-  const z = cam.z;
-  elipse(camX(wx + rx * 0.08), camY(wy + ry * 0.3), rx * 0.88 * z, ry * 0.7 * z, 23);
-  copa(wx, wy - ry * 0.05, rx, ry * 0.96, 24, 25);
+/* Una masa: sombra abajo, brillo arriba a la izquierda, contorno de 1 px. */
+function bulto(cx, cy, rx, ry, s, base) {
+  const ancla = base || 0;
+  const lomo = [
+    0.02, -1.08,
+    0.4, -0.74,
+    0.82, -0.38,
+    1.04, 0.04,
+    0.68, 0.26,
+    0.22, 0.12,
+    -0.12, 0.36,
+    -0.5, 0.52,
+    -0.82, 0.18,
+    -1.08, -0.14,
+    -0.7, -0.6,
+    -0.26, -0.96
+  ];
+  function forma(escala, dy, dx) {
+    const o = [];
+    for (let i = 0; i < lomo.length; i += 2) {
+      const nx = lomo[i];
+      const ny = lomo[i + 1];
+      o.push(
+        camX(cx + nx * rx * escala + dx + ancla + s * Math.max(0, -ny)),
+        camY(cy + ny * ry * escala + dy)
+      );
+    }
+    return o;
+  }
+  const o = forma(1, 0, 0);
+  poly(o, 23);
+  poly(forma(0.74, -ry * 0.2, -rx * 0.1), 24);
+  poly(forma(0.34, -ry * 0.52, -rx * 0.24), 25);
+  borde(o, 0);
 }
 
-/* A la derecha, en el campo. La copa no entra en el cartel. */
+/* Un solo tronco que afina, pie ancho, dos ramas y una copa. */
+function arbol(x, pie, esc, fila) {
+  const s = viento(x, fila);
+  const z = cam.z;
+  const alto = 98 * esc;
+  const cima = pie - alto;
+  const flex = s * 1.05 * esc;
+  const medio = pie - alto * 0.5;
+  elipse(camX(x - 6 * esc), camY(pie + 6.5 * esc), 22 * esc * z, 4.2 * esc * z, 23);
+  const o = [
+    camX(x - 15 * esc), camY(pie + 1.3 * esc),
+    camX(x - 9.2 * esc), camY(pie - 5 * esc),
+    camX(x - 6.6 * esc), camY(pie - 16 * esc),
+    camX(x - 4.4 * esc + flex * 0.28), camY(medio),
+    camX(x - 2.4 * esc + flex), camY(cima),
+    camX(x + 2.2 * esc + flex), camY(cima),
+    camX(x + 3.5 * esc + flex * 0.28), camY(medio),
+    camX(x + 5.4 * esc), camY(pie - 16 * esc),
+    camX(x + 8.6 * esc), camY(pie - 4 * esc),
+    camX(x + 13.4 * esc), camY(pie + 1.3 * esc)
+  ];
+  poly(o, 27);
+  poly([
+    camX(x + 0.8 * esc + flex * 0.15), camY(pie - 18 * esc),
+    camX(x + 0.2 * esc + flex), camY(cima + 3 * esc),
+    camX(x + 2 * esc + flex), camY(cima + 2 * esc),
+    camX(x + 3.2 * esc + flex * 0.25), camY(medio),
+    camX(x + 5 * esc), camY(pie - 16 * esc),
+    camX(x + 7.4 * esc), camY(pie - 6 * esc),
+    camX(x + 3.6 * esc), camY(pie - 10 * esc)
+  ], 26);
+  poly([
+    camX(x - 12.2 * esc), camY(pie - 0.4 * esc),
+    camX(x - 7.8 * esc), camY(pie - 13 * esc),
+    camX(x - 4.6 * esc + flex * 0.22), camY(medio + 2 * esc),
+    camX(x - 2.2 * esc + flex), camY(cima + 4 * esc),
+    camX(x - 0.2 * esc + flex * 0.8), camY(cima + 8 * esc),
+    camX(x - 2.8 * esc + flex * 0.2), camY(medio + 4 * esc),
+    camX(x - 5.4 * esc), camY(pie - 14 * esc),
+    camX(x - 8.6 * esc), camY(pie - 1.2 * esc)
+  ], 28);
+  borde(o, 0);
+  const sale = cima + 24 * esc;
+  tramo(x + flex * 0.1, sale, x - 15 * esc + flex * 0.35, cima + 15 * esc, 2.25 * esc, 1.15 * esc);
+  tramo(x + flex * 0.12, sale + 1.5 * esc, x + 14 * esc + flex * 0.28, cima + 16 * esc, 2.05 * esc, 1.05 * esc);
+  copaArbol(x + flex * 0.12, cima + 2 * esc, esc, flex, s * 0.32);
+}
+
+/* Copas solapadas en una masa: sombra abajo, brillo arriba, contorno de 1 px. */
+function copaArbol(cx, cy, esc, flex, s) {
+  const z = cam.z;
+  function sitio(dx, dy) {
+    const peso = Math.max(0, -dy / 12);
+    return [
+      camX(cx + dx * esc + flex + s * peso),
+      camY(cy + dy * esc)
+    ];
+  }
+  function bola(dx, dy, rx, ry, c, borde) {
+    const q = sitio(dx, dy);
+    const extra = borde ? 1 : 0;
+    elipse(q[0], q[1], rx * esc * z + extra, ry * esc * z + extra, c);
+  }
+  const masa = [
+    [-10, 3.2, 10.2, 6.2],
+    [11, 3.6, 9.4, 5.8],
+    [0, 4.2, 11.2, 5.4],
+    [-4, -1.2, 10.4, 8],
+    [6, -0.4, 9.2, 7],
+    [0, -5, 11, 8.4]
+  ];
+  for (let i = 0; i < masa.length; i++) {
+    const m = masa[i];
+    bola(m[0], m[1], m[2], m[3], 0, true);
+  }
+  bola(-10, 3.2, 10.2, 6.2, 23, false);
+  bola(11, 3.6, 9.4, 5.8, 23, false);
+  bola(0, 4.2, 11.2, 5.4, 23, false);
+  bola(-4, -1.2, 10.4, 8, 24, false);
+  bola(6, -0.4, 9.2, 7, 24, false);
+  bola(0, -5, 11, 8.4, 24, false);
+  bola(-4.2, -7.2, 6.4, 4.2, 25, false);
+  bola(-1.2, -5.4, 3.6, 2.5, 25, false);
+}
+
+/* Lejos, a la izquierda. No llega al cartel ni al centro. */
+function arbolLejos() {
+  arbol(10, 192, 0.48, 1);
+}
+
+/* A la derecha. La copa queda fuera del cartel y de los volcanes. */
 function arbolAlto() {
-  const x = 158;
-  const pie = 248;
-  const s = viento(x, 0);
-  const z = cam.z;
-  elipse(camX(x + 7), camY(pie + 2), 18 * z, 4.2 * z, 23);
-  tramo(x, pie + 1, x + s * 0.16, pie - 40, 6.2, 4.4);
-  tramo(x + s * 0.1, pie - 36, x + s * 0.5, pie - 86, 4.3, 2.6);
-  const c = x + s * 0.55;
-  const t = pie - 108;
-  masaCopa(c - 2, t + 8, 16, 13);
-  masaCopa(c + 11, t + 6, 14, 11);
-  masaCopa(c + 4, t - 6, 17, 14);
+  arbol(158, 246, 1, 0);
 }
 
-/* A la izquierda, más bajo, con la misma sombra en el plano. */
-function arbusto() {
-  const x = 32;
-  const y = 214;
-  const s = viento(x, 2) * 0.75;
+/* Mata baja: la sombra quieta y la punta con el mismo viento. */
+function mata(x, y, rx, ry, fila) {
+  const s = viento(x, fila) * 0.65;
   const z = cam.z;
-  elipse(camX(x + 3), camY(y + 2), 13 * z, 3.4 * z, 23);
-  copa(x - 5 + s, y - 7, 12, 8, 24, 25);
-  copa(x + 8 + s * 0.8, y - 5, 10, 7, 23, 24);
+  elipse(camX(x + rx * 0.06), camY(y + 1), rx * 0.92 * z, Math.max(1.45, ry * 0.32) * z, 23);
+  bulto(x, y - ry * 0.92, rx, ry, s, 0);
+}
+
+function arbustoLejos() {
+  mata(38, 172, 6.2, 4, 1);
+}
+
+function arbusto() {
+  mata(20, 248, 13.2, 8, 3);
+}
+
+/* Tres postes y dos tablas. Tramo corto, a la derecha. */
+function valla() {
+  const xs = [146, 160, 174];
+  const base = 286;
+  const alto = 20;
+  const s = viento(160, 3);
+  const z = cam.z;
+  const puntas = [];
+  for (let i = 0; i < xs.length; i++) {
+    const x = xs[i];
+    const punta = s * (0.16 + i * 0.04);
+    puntas.push(punta);
+    elipse(camX(x), camY(base + 1.2), 3.3 * z, 1.4 * z, 23);
+    tramo(x, base, x + punta, base - alto, 2.05, 1.35);
+  }
+  tabla(xs[0] + puntas[0] * 0.72, base - alto * 0.68, xs[2] + puntas[2] * 0.72, base - alto * 0.72, 2.4);
+  tabla(xs[0] + puntas[0] * 0.32, base - alto * 0.3, xs[2] + puntas[2] * 0.32, base - alto * 0.34, 2.15);
+}
+
+function tabla(x0, y0, x1, y1, grueso) {
+  const o = [
+    camX(x0), camY(y0),
+    camX(x1), camY(y1),
+    camX(x1), camY(y1 + grueso),
+    camX(x0), camY(y0 + grueso)
+  ];
+  poly(o, 27);
+  poly([
+    camX(x0), camY(y0),
+    camX(x1), camY(y1),
+    camX(x1), camY(y1 + grueso * 0.34),
+    camX(x0), camY(y0 + grueso * 0.34)
+  ], 28);
+  poly([
+    camX(x0), camY(y0 + grueso * 0.62),
+    camX(x1), camY(y1 + grueso * 0.62),
+    camX(x1), camY(y1 + grueso),
+    camX(x0), camY(y0 + grueso)
+  ], 26);
+  borde(o, 0);
+}
+
+/* Dos piedras quietas, con sombra, sobre la tierra. */
+function piedra(wx, wy, rx, ry) {
+  const z = cam.z;
+  elipse(camX(wx + rx * 0.12), camY(wy + ry * 0.42), rx * z, ry * 0.42 * z, 10);
+  solido([
+    camX(wx - rx * 0.95), camY(wy + ry * 0.08),
+    camX(wx - rx * 0.32), camY(wy - ry * 0.92),
+    camX(wx + rx * 0.28), camY(wy - ry * 0.62),
+    camX(wx + rx), camY(wy + ry * 0.12),
+    camX(wx + rx * 0.3), camY(wy + ry * 0.42),
+    camX(wx - rx * 0.5), camY(wy + ry * 0.36)
+  ], 9, 0);
+  poly([
+    camX(wx - rx * 0.42), camY(wy - ry * 0.12),
+    camX(wx - rx * 0.02), camY(wy - ry * 0.58),
+    camX(wx + rx * 0.18), camY(wy - ry * 0.22),
+    camX(wx - rx * 0.08), camY(wy + ry * 0.04)
+  ], 8);
+}
+
+function piedras() {
+  piedra(40, 309, 6.4, 4.1);
+  piedra(54, 312, 4.2, 2.9);
 }
 
 /* Lejos y claros: sombra, cara de luz y punta. El contorno va al final. */
@@ -1029,11 +1222,13 @@ function escena(v) {
   cielo();
   nubesLejos();
   nubesCerca();
-  pajaros();
   volcanes();
+  pajaros();
   pradera();
   sembrar(150, 0.32, 16, 0, 0);
   sembrar(186, 0.52, 24, 1, 0);
+  arbolLejos();
+  arbustoLejos();
   for (let i = 0; i < patos.length; i++) {
     if (patos[i].estado === "cae") dibujarPato(patos[i]);
   }
@@ -1047,6 +1242,8 @@ function escena(v) {
   dibujarPlumas();
   tierra();
   sembrar(286, 1.12, 44, 3, 1);
+  valla();
+  piedras();
   patoLejos(v.e);
 }
 
