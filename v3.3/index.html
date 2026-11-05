@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0A0A0A">
+<title>CUARTO</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #0A0A0A;
+    overflow: hidden;
+    touch-action: none;
+    overscroll-behavior: none;
+    user-select: none;
+  }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas {
+    touch-action: none;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<canvas id="v"></canvas>
+<script>
+"use strict";
+const W = 180;
+const H = 320;
+const PAL = new Uint8ClampedArray([
+10, 10, 10,
+54, 60, 86,
+186, 194, 224,
+43, 53, 255,
+16, 22, 120,
+162, 168, 255,
+215, 255, 58,
+88, 114, 12,
+247, 247, 242,
+150, 152, 144,
+18, 22, 40,
+78, 84, 112
+]);
+const ORDEN = "ABCDEILNOPRTUV0123456789";
+const BITS = [
+0x699F99, 0xE9E99E, 0x698896, 0xE9999E, 0xF8E88F, 0xF4444F, 0x88888F,
+0x9DB999, 0x699996, 0xE99E88, 0xE99EA9, 0xF44444, 0x999996, 0x999964,
+0x69BD96, 0x4C444E, 0x69124F, 0xE16196, 0x26AF22, 0xF8E196, 0x68E996,
+0xF12444, 0x696996, 0x699716
+];
+const idx = new Uint8Array(W * H);
+const vista = document.getElementById("v");
+const interno = document.createElement("canvas");
+interno.width = W;
+interno.height = H;
+const ctxInterno = interno.getContext("2d", { alpha: false });
+const imagen = ctxInterno.createImageData(W, H);
+const pixeles = imagen.data;
+let ctxVista = vista.getContext("2d", { alpha: false });
+let escalaPrev = 0;
+let dprPrev = 0;
+let seg = 0;
+let antes = 0;
+let ac = null;
+let master = null;
+let ruido = null;
+const S = {
+modo: "titulo",
+t: 0,
+vidas: 4,
+ronda: 0,
+ventana: 500,
+dur: 1400,
+cara: "idle",
+pose: "",
+juzgado: false,
+tick: 0,
+listo: 0,
+shake: 0,
+flash: 0
+};
+function px(x, y, c) {
+x |= 0;
+y |= 0;
+if (x < 0 || y < 0 || x >= W || y >= H) return;
+idx[y * W + x] = c;
+}
+function lleno(x, y, w, h, c) {
+x |= 0;
+y |= 0;
+w |= 0;
+h |= 0;
+if (w <= 0 || h <= 0) return;
+let x0 = x < 0 ? 0 : x;
+let y0 = y < 0 ? 0 : y;
+let x1 = x + w;
+let y1 = y + h;
+if (x1 > W) x1 = W;
+if (y1 > H) y1 = H;
+if (x1 <= x0 || y1 <= y0) return;
+for (let yy = y0; yy < y1; yy++) idx.fill(c, yy * W + x0, yy * W + x1);
+}
+function marco(x, y, w, h, c) {
+lleno(x, y, w, 1, c);
+lleno(x, y + h - 1, w, 1, c);
+lleno(x, y, 1, h, c);
+lleno(x + w - 1, y, 1, h, c);
+}
+function linea(x0, y0, x1, y1, c) {
+x0 |= 0;
+y0 |= 0;
+x1 |= 0;
+y1 |= 0;
+let dx = Math.abs(x1 - x0);
+let dy = Math.abs(y1 - y0);
+const sx = x0 < x1 ? 1 : -1;
+const sy = y0 < y1 ? 1 : -1;
+let e = dx - dy;
+for (;;) {
+px(x0, y0, c);
+if (x0 === x1 && y0 === y1) break;
+const e2 = e << 1;
+if (e2 > -dy) { e -= dy; x0 += sx; }
+if (e2 < dx) { e += dx; y0 += sy; }
+}
+}
+function poly(pts, c) {
+const n = pts.length >> 1;
+let y0 = 999;
+let y1 = -999;
+for (let i = 0; i < n; i++) {
+const y = pts[i * 2 + 1];
+if (y < y0) y0 = y;
+if (y > y1) y1 = y;
+}
+y0 = y0 < 0 ? 0 : y0 | 0;
+y1 = y1 >= H ? H - 1 : y1 | 0;
+for (let y = y0; y <= y1; y++) {
+let xL = 999;
+let xR = -999;
+let hit = 0;
+for (let i = 0; i < n; i++) {
+const j = (i + 1) % n;
+let yA = pts[i * 2 + 1];
+let yB = pts[j * 2 + 1];
+let xA = pts[i * 2];
+let xB = pts[j * 2];
+if (yA === yB) continue;
+if (yA > yB) {
+const ty = yA; yA = yB; yB = ty;
+const tx = xA; xA = xB; xB = tx;
+}
+if (y < yA || y >= yB) continue;
+const x = xA + (xB - xA) * ((y - yA) / (yB - yA));
+if (x < xL) xL = x;
+if (x > xR) xR = x;
+hit++;
+}
+if (hit < 2) continue;
+let a = xL | 0;
+let b = xR | 0;
+if (a < 0) a = 0;
+if (b >= W) b = W - 1;
+if (b >= a) idx.fill(c, y * W + a, y * W + b + 1);
+}
+}
+function borde(pts, c) {
+const n = pts.length >> 1;
+for (let i = 0; i < n; i++) {
+const j = (i + 1) % n;
+linea(pts[i * 2], pts[i * 2 + 1], pts[j * 2], pts[j * 2 + 1], c);
+}
+}
+function solido(pts, fill, ink) {
+poly(pts, fill);
+if (ink >= 0) borde(pts, ink);
+}
+function elipse(cx, cy, rx, ry, c) {
+if (rx < 0.5 || ry < 0.5) return;
+const y1 = Math.ceil(ry);
+const ry2 = ry * ry;
+for (let y = -y1; y <= y1; y++) {
+const t = 1 - (y * y) / ry2;
+if (t <= 0) continue;
+const ww = Math.sqrt(t) * rx;
+const yy = (cy + y) | 0;
+if (yy < 0 || yy >= H) continue;
+let x0 = (cx - ww) | 0;
+let x1 = (cx + ww) | 0;
+if (x0 < 0) x0 = 0;
+if (x1 >= W) x1 = W - 1;
+if (x1 >= x0) idx.fill(c, yy * W + x0, yy * W + x1 + 1);
+}
+}
+function texto(s, x, y, sc, c, sombra) {
+if (sombra) texto(s, x + sc, y + sc, sc, 0, false);
+for (let i = 0; i < s.length; i++) {
+const k = ORDEN.indexOf(s.charAt(i));
+if (k < 0) continue;
+const g = BITS[k];
+const ox = x + i * 5 * sc;
+for (let row = 0; row < 6; row++) {
+const bits = (g >> ((5 - row) * 4)) & 15;
+for (let col = 0; col < 4; col++) {
+if (bits & (8 >> col)) lleno(ox + col * sc, y + row * sc, sc, sc, c);
+}
+}
+}
+}
+function centroTexto(s, y, sc, c) {
+texto(s, (W - (s.length * 5 * sc - sc)) >> 1, y, sc, c, true);
+}
+function grito(s, y, sc, letra, bordeC, fondo) {
+const w = s.length * 5 * sc - sc;
+const x = (W - w) >> 1;
+const h = 6 * sc;
+lleno(x - 5, y - 4, w + 10, h + 8, fondo);
+marco(x - 5, y - 4, w + 10, h + 8, bordeC);
+texto(s, x, y, sc, letra, false);
+}
+function fase() {
+const c = S.dur * 0.58;
+const m = S.ventana * 0.5;
+const aviso = Math.min(130, S.ventana * 0.4);
+if (Math.abs(S.t - c) <= m) return 2;
+if (S.t >= c - m - aviso && S.t < c - m) return 1;
+if (S.t > c + m) return 3;
+return 0;
+}
+/* Intérprete: rectángulo, elipse, línea y polígono salen de un programa de bytes. */
+const Z="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";
+const GS=["TOCA","OTRA","BIEN","PRONTO","TARDE","VOLTEA"];
+const C=Uint8Array.from(atob(Z),s=>s.charCodeAt(0));
+const D=new DataView(C.buffer);
+let o=2,ns=D.getUint16(0,1),SUB=[];
+for(let i=0;i<ns;i++){SUB.push(D.getUint16(o,1));o+=2;}
+let np=D.getUint16(o,1);o+=2;const K=[];
+for(let i=0;i<np;i++){K.push(D.getFloat64(o,1));o+=8;}
+const B=o,R=new Float64Array(160);
+let pc,st,fr,pts;
+function g(i){return i<1?seg:i<2?S.t:i<3?S.vidas:i<4?S.ventana:i<5?S.dur:i<6?S.ronda:i<7?(S.cara==="feliz"?2:S.cara==="cruz"?1:0):i<8?(S.modo==="titulo"?0:S.modo==="cuarto"?1:S.modo==="zoom"?2:S.modo==="juego"?3:S.modo==="impacto"?4:5):(S.pose==="bien"?1:S.pose==="pronto"?2:S.pose==="tarde"?3:0);}
+function i16(){const d=D.getInt16(pc,1);pc+=2;return d;}
+function run(id,args){
+st=[];fr=[];pts=[];R.fill(0);
+if(args)for(let i=0;i<args.length;i++)R[i]=args[i];
+pc=B+SUB[id];
+for(;;){
+const op=C[pc++];
+if(op===1){
+if(!fr.length){if(st.length)throw Error("pila");return R[159];}
+const f=fr.pop();if(st.length!==f.s)throw Error("pila");
+R.set(f.r);pc=f.p;continue;
+}
+if(op===50){
+const ret=st.pop();
+if(!fr.length){if(st.length)throw Error("pila");R[159]=ret;return ret;}
+const f=fr.pop();if(st.length!==f.s)throw Error("pila");
+R.set(f.r);R[159]=ret;pc=f.p;continue;
+}
+let a,b,c,d,e,q,h,w,x,y;
+switch(op){
+case 2:st.push(C[pc++]);break;
+case 3:a=C[pc++];st.push(a>127?a-256:a);break;
+case 4:st.push(i16());break;
+case 5:st.push(K[D.getUint16(pc,1)]);pc+=2;break;
+case 6:b=st.pop();a=st.pop();st.push(a+b);break;
+case 7:b=st.pop();a=st.pop();st.push(a-b);break;
+case 8:b=st.pop();a=st.pop();st.push(a*b);break;
+case 9:b=st.pop();a=st.pop();st.push(a/b);break;
+case 10:b=st.pop();a=st.pop();st.push(a%b);break;
+case 11:st.push(-st.pop());break;
+case 12:st.push(Math.abs(st.pop()));break;
+case 13:st.push(st.pop()?0:1);break;
+case 14:b=st.pop();a=st.pop();st.push(Math.min(a,b));break;
+case 15:b=st.pop();a=st.pop();st.push(Math.max(a,b));break;
+case 16:st.push(Math.sin(st.pop()));break;
+case 17:st.push(Math.cos(st.pop()));break;
+case 18:b=st.pop();a=st.pop();st.push(Math.hypot(a,b));break;
+case 51:st.push(Math.sqrt(st.pop()));break;
+case 52:b=st.pop();a=st.pop();st.push(Math.pow(a,b));break;
+case 53:st.push(Math.ceil(st.pop()));break;
+case 19:st.push(st[st.length-1]);break;
+case 20:st.pop();break;
+case 21:st.push(R[C[pc++]]);break;
+case 22:R[C[pc++]]=st.pop();break;
+case 23:st.push(g(C[pc++]));break;
+case 24:b=st.pop();a=st.pop();st.push(a<b?1:0);break;
+case 25:b=st.pop();a=st.pop();st.push(a>b?1:0);break;
+case 26:b=st.pop();a=st.pop();st.push(a===b?1:0);break;
+case 27:b=st.pop();a=st.pop();st.push(a<=b?1:0);break;
+case 28:b=st.pop();a=st.pop();st.push(a>=b?1:0);break;
+case 29:b=st.pop();a=st.pop();st.push(a&b);break;
+case 30:b=st.pop();a=st.pop();st.push(a|b);break;
+case 54:b=st.pop();a=st.pop();st.push(a>>b);break;
+case 55:b=st.pop();a=st.pop();st.push(a<<b);break;
+case 31:d=i16();pc+=d;break;
+case 32:d=i16();if(!st.pop())pc+=d;break;
+case 33:d=i16();if(st.pop())pc+=d;break;
+case 34:c=st.pop();h=st.pop();w=st.pop();y=st.pop();x=st.pop();lleno(x,y,w,h,c);break;
+case 35:c=st.pop();b=st.pop();a=st.pop();y=st.pop();x=st.pop();elipse(x,y,a,b,c);break;
+case 36:c=st.pop();b=st.pop();a=st.pop();y=st.pop();x=st.pop();linea(x,y,a,b,c);break;
+case 37:c=st.pop();y=st.pop();x=st.pop();px(x,y,c);break;
+case 38:c=st.pop();h=st.pop();w=st.pop();y=st.pop();x=st.pop();marco(x,y,w,h,c);break;
+case 39:y=st.pop();x=st.pop();pts.push(x,y);break;
+case 40:pts=[];break;
+case 41:poly(pts,st.pop());break;
+case 42:borde(pts,st.pop());break;
+case 43:b=st.pop();a=st.pop();solido(pts,a,b);break;
+case 44:
+a=C[pc++];b=C[pc++];c=R.slice();d=[];
+for(let i=a-1;i>=0;i--)d[i]=st.pop();
+e=st.length;fr.push({p:pc,r:c,s:e});R.fill(0);
+for(let i=0;i<a;i++)R[i]=d[i];
+pc=B+SUB[b];break;
+case 45:st.push(fase());break;
+case 46:a=C[pc++];b=st.pop()|0;st.push(R[a+b]);break;
+case 47:a=C[pc++];q=st.pop();e=st.pop();d=st.pop();c=st.pop();y=st.pop();grito(GS[a],y,c,d,e,q);break;
+case 48:a=st.pop();b=st.pop();c=st.pop();y=st.pop();x=st.pop();d=st.pop();texto(String(d),x,y,c,b,a);break;
+case 49:a=st.pop();b=st.pop();y=st.pop();d=st.pop();centroTexto(String(d),y,b,a);break;
+default:throw Error("op "+op);
+}
+}
+}
+function cuarto(abre){run(21,[abre]);}
+function juego(){run(23);}
+function interfaz(){run(22);}
+function apertura() {
+if (S.modo === "zoom") return Math.min(1, (S.t / 420) / 0.4);
+if ((S.modo === "cuarto" || S.modo === "fin") && (S.cara === "feliz" || S.cara === "cruz") && S.t < 300) {
+return 1 - S.t / 300;
+}
+return 0;
+}
+function acelerar() {
+S.ventana = Math.max(180, (S.ventana * 0.78) | 0);
+S.dur = Math.max(780, (S.dur * 0.88) | 0);
+}
+function asegurar() {
+if (ac) {
+if (ac.state === "suspended") ac.resume();
+return;
+}
+const AC = window.AudioContext || window.webkitAudioContext;
+if (!AC) return;
+try { ac = new AC(); } catch (e) { return; }
+master = ac.createGain();
+master.gain.value = 0.22;
+master.connect(ac.destination);
+const n = (ac.sampleRate * 0.08) | 0;
+ruido = ac.createBuffer(1, n, ac.sampleRate);
+const d = ruido.getChannelData(0);
+for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+}
+function tono(freq, dur, tipo, vol, cuando, destino) {
+if (!ac) return;
+const t = cuando == null ? ac.currentTime : cuando;
+const o = ac.createOscillator();
+const g = ac.createGain();
+o.type = tipo;
+o.frequency.setValueAtTime(Math.max(40, freq), t);
+if (destino) o.frequency.exponentialRampToValueAtTime(Math.max(40, destino), t + dur);
+g.gain.setValueAtTime(Math.max(0.001, vol), t);
+g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+o.connect(g);
+g.connect(master);
+o.start(t);
+o.stop(t + dur + 0.02);
+}
+function chasquido() {
+if (!ac || !ruido) return;
+const src = ac.createBufferSource();
+src.buffer = ruido;
+const f = ac.createBiquadFilter();
+f.type = "highpass";
+f.frequency.value = 700;
+const g = ac.createGain();
+const t = ac.currentTime;
+g.gain.setValueAtTime(0.4, t);
+g.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+src.connect(f);
+f.connect(g);
+g.connect(master);
+src.start(t);
+src.stop(t + 0.08);
+}
+function fanfarria() {
+if (!ac) return;
+const t = ac.currentTime;
+chasquido();
+tono(523, 0.08, "square", 0.16, t);
+tono(659, 0.08, "square", 0.16, t + 0.07);
+tono(784, 0.16, "square", 0.18, t + 0.14);
+}
+function falloSonido() {
+chasquido();
+tono(180, 0.24, "sawtooth", 0.16, null, 48);
+}
+function ganar() {
+S.juzgado = true;
+S.pose = "bien";
+S.modo = "impacto";
+S.t = 0;
+S.cara = "feliz";
+S.ronda++;
+S.shake = 8;
+S.flash = 1;
+acelerar();
+fanfarria();
+}
+function perder(tipo) {
+if (S.juzgado) return;
+S.juzgado = true;
+S.pose = tipo;
+S.modo = "impacto";
+S.t = 0;
+S.cara = "cruz";
+S.vidas--;
+S.shake = 8;
+acelerar();
+falloSonido();
+}
+function salir() {
+S.shake = 4;
+if (S.vidas <= 0) {
+S.modo = "fin";
+S.t = 0;
+tono(98, 0.3, "square", 0.18, null, 42);
+return;
+}
+S.modo = "cuarto";
+S.t = 0;
+tono(S.cara === "feliz" ? 720 : 150, 0.08, "square", 0.12);
+}
+function reiniciar() {
+S.modo = "cuarto";
+S.t = 0;
+S.vidas = 4;
+S.ronda = 0;
+S.ventana = 500;
+S.dur = 1400;
+S.cara = "idle";
+S.pose = "";
+S.juzgado = false;
+tono(210, 0.1, "sine", 0.12);
+}
+function enZona() {
+return Math.abs(S.t - S.dur * 0.58) <= S.ventana * 0.5;
+}
+function pulso(e) {
+if (e && e.preventDefault) e.preventDefault();
+asegurar();
+if (S.modo === "titulo") {
+S.modo = "cuarto";
+S.t = 0;
+tono(230, 0.09, "sine", 0.14);
+return;
+}
+if (S.modo === "fin") {
+reiniciar();
+return;
+}
+if (S.modo === "juego" && !S.juzgado) {
+if (enZona()) ganar();
+else perder(S.t < S.dur * 0.58 ? "pronto" : "tarde");
+}
+}
+function presentar(zoom, fx, fy) {
+for (let i = 0, n = idx.length; i < n; i++) {
+const p = idx[i] * 3;
+const o = i << 2;
+pixeles[o] = PAL[p];
+pixeles[o + 1] = PAL[p + 1];
+pixeles[o + 2] = PAL[p + 2];
+pixeles[o + 3] = 255;
+}
+ctxInterno.putImageData(imagen, 0, 0);
+const dpr = Math.min(window.devicePixelRatio || 1, 2);
+const escala = Math.max(1, Math.floor(Math.min(window.innerWidth / W, window.innerHeight / H)));
+if (escala !== escalaPrev || dpr !== dprPrev) {
+escalaPrev = escala;
+dprPrev = dpr;
+vista.width = Math.floor(W * escala * dpr);
+vista.height = Math.floor(H * escala * dpr);
+vista.style.width = W * escala + "px";
+vista.style.height = H * escala + "px";
+ctxVista = vista.getContext("2d", { alpha: false });
+}
+ctxVista.imageSmoothingEnabled = false;
+if (S.flash > 0) {
+S.flash--;
+ctxVista.fillStyle = "#F7F7F2";
+ctxVista.fillRect(0, 0, vista.width, vista.height);
+return;
+}
+const z = zoom || 1;
+const sw = W / z;
+const sh = H / z;
+const sx0 = (fx == null ? W * 0.5 : fx) - sw * 0.5;
+const sy0 = (fy == null ? 100 : fy) - sh * 0.5;
+const j = S.shake ? ((Math.random() * 5) | 0) - 2 : 0;
+const k = S.shake ? ((Math.random() * 5) | 0) - 2 : 0;
+ctxVista.fillStyle = "#0A0A0A";
+ctxVista.fillRect(0, 0, vista.width, vista.height);
+ctxVista.drawImage(
+interno,
+sx0, sy0, sw, sh,
+j * escala * dpr, k * escala * dpr,
+vista.width, vista.height
+);
+}
+function cuadro(ahora) {
+if (!antes) antes = ahora;
+const dt = Math.min(34, ahora - antes);
+antes = ahora;
+seg += dt / 1000;
+S.t += dt;
+if (S.modo === "cuarto" && S.t >= 1000) {
+S.modo = "zoom";
+S.t = 0;
+S.shake = 6;
+chasquido();
+} else if (S.modo === "zoom" && S.t >= 420) {
+S.modo = "juego";
+S.t = 0;
+S.juzgado = false;
+S.tick = 0;
+S.listo = 0;
+S.pose = "";
+S.flash = 1;
+tono(300, 0.06, "square", 0.14);
+chasquido();
+} else if (S.modo === "juego") {
+const f = fase();
+if (f === 1 && !S.listo) {
+S.listo = 1;
+tono(494, 0.045, "sine", 0.1);
+}
+if (f === 2 && !S.tick) {
+S.tick = 1;
+tono(988, 0.035, "square", 0.16);
+}
+if (S.t >= S.dur && !S.juzgado) perder("tarde");
+} else if (S.modo === "impacto" && S.t >= 480) {
+salir();
+}
+if (S.shake > 0) S.shake--;
+idx.fill(0);
+if (S.modo === "juego" || S.modo === "impacto") {
+juego();
+presentar(1);
+} else {
+cuarto(apertura());
+if (S.modo !== "zoom") interfaz();
+if (S.modo === "zoom") {
+const k = S.t / 420;
+const z = 1 + Math.pow(Math.max(0, (k - 0.1) / 0.9), 1.4) * 3.5;
+presentar(z, 90, 96);
+} else presentar(1);
+}
+requestAnimationFrame(cuadro);
+}
+addEventListener("pointerdown", pulso, { passive: false });
+addEventListener("keydown", function (ev) {
+if (ev.repeat) return;
+if (ev.code === "Space" || ev.code === "Enter") pulso(ev);
+});
+addEventListener("contextmenu", function (ev) { ev.preventDefault(); });
+addEventListener("touchmove", function (ev) { ev.preventDefault(); }, { passive: false });
+requestAnimationFrame(cuadro);
+</script>
+</body>
+</html>
