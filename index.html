@@ -1,0 +1,969 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#2B35FF">
+<title>PITCH</title>
+<style>
+  /* Cabinet a pantalla completa. El negro de alrededor también recibe el toque. */
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #0a0a0a;
+    overflow: hidden;
+    touch-action: none;
+    overscroll-behavior: none;
+  }
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  canvas {
+    touch-action: none;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+</style>
+</head>
+<body>
+<canvas id="v"></canvas>
+<script>
+"use strict";
+
+/* PITCH — diseño inicial para build&play.
+   Paleta de open2.io. Píxeles y sonido hechos en código:
+   sin imágenes, sin archivos de audio, sin fuentes y sin librerías.
+
+   Para no contaminar la pantalla, el marco está quieto
+   (header, cortinas, línea del escenario) y cada acierto
+   suelta UNA ola: anillo, columna de luz y cresta en el público.
+   El fallo apaga esa ola. El contraste es el que engancha. */
+
+const W = 180;
+const H = 320;
+const LX = 12;
+const LW = 156;
+const CENTERS = [0.18, 0.5, 0.82];
+
+/* Índices de color. Azul #2B35FF, lima #D7FF3A, tinta y papel del sitio. */
+const RGB = [
+  10, 10, 10,       /* 0 tinta */
+  16, 20, 46,       /* 1 noche */
+  43, 53, 255,      /* 2 azul */
+  122, 132, 255,    /* 3 azul claro */
+  247, 247, 242,    /* 4 papel */
+  215, 255, 58,     /* 5 lima */
+  255, 59, 92,      /* 6 rojo */
+  255, 200, 58,     /* 7 oro */
+  201, 164, 120,    /* 8 piel */
+  42, 28, 18,       /* 9 pelo */
+  58, 42, 24,       /* 10 madera */
+  107, 76, 40,      /* 11 madera clara */
+  28, 32, 48,       /* 12 público */
+  20, 24, 42,       /* 13 ciudad */
+  42, 16, 32,       /* 14 telón */
+  232, 236, 255,    /* 15 flash */
+  110, 140, 20,     /* 16 lima oscura */
+  160, 124, 88,     /* 17 piel sombra */
+  22, 26, 48,       /* 18 pantalón */
+  22, 28, 110       /* 19 azul profundo */
+];
+
+/* Fuente 4×6 dibujada a mano. No se descarga ninguna fuente. */
+const FONT = {
+  A: [6, 9, 9, 15, 9, 9],
+  B: [14, 9, 14, 9, 9, 14],
+  C: [6, 9, 8, 8, 9, 6],
+  D: [14, 9, 9, 9, 9, 14],
+  E: [15, 8, 14, 8, 8, 15],
+  F: [15, 8, 14, 8, 8, 8],
+  G: [6, 9, 8, 11, 9, 6],
+  H: [9, 9, 15, 9, 9, 9],
+  I: [15, 4, 4, 4, 4, 15],
+  J: [1, 1, 1, 1, 9, 6],
+  K: [9, 10, 12, 12, 10, 9],
+  L: [8, 8, 8, 8, 8, 15],
+  M: [9, 15, 15, 9, 9, 9],
+  N: [9, 13, 11, 9, 9, 9],
+  O: [6, 9, 9, 9, 9, 6],
+  P: [14, 9, 9, 14, 8, 8],
+  Q: [6, 9, 9, 13, 11, 6],
+  R: [14, 9, 9, 14, 10, 9],
+  S: [7, 8, 6, 1, 1, 14],
+  T: [15, 4, 4, 4, 4, 4],
+  U: [9, 9, 9, 9, 9, 6],
+  V: [9, 9, 9, 9, 6, 4],
+  W: [9, 9, 9, 15, 15, 9],
+  X: [9, 9, 6, 6, 9, 9],
+  Y: [9, 9, 6, 4, 4, 4],
+  Z: [15, 1, 2, 4, 8, 15],
+  0: [6, 9, 11, 13, 9, 6],
+  1: [4, 12, 4, 4, 4, 14],
+  2: [6, 9, 1, 2, 4, 15],
+  3: [14, 1, 6, 1, 9, 6],
+  4: [2, 6, 10, 15, 2, 2],
+  5: [15, 8, 14, 1, 9, 6],
+  6: [6, 8, 14, 9, 9, 6],
+  7: [15, 1, 2, 4, 4, 4],
+  8: [6, 9, 6, 9, 9, 6],
+  9: [6, 9, 9, 7, 1, 6]
+};
+
+const idx = new Uint8Array(W * H);
+const PARTS = [];
+const PARTICULAS = [];
+
+let mejorGuardado = 0;
+try {
+  mejorGuardado = Number(localStorage.getItem("pitch-mejor")) || 0;
+} catch (e) {
+  mejorGuardado = 0;
+}
+
+const S = {
+  modo: "titulo",
+  vt: 0,
+  ronda: 1,
+  puntos: 0,
+  mejor: mejorGuardado,
+  record: false,
+  combo: 0,
+  mejorCombo: 0,
+  lleno: [0, 0, 0],
+  mecha: 1,
+  haz: 0.08,
+  dir: 1,
+  pase: 0,
+  shake: 0,
+  pausa: 0,
+  fiesta: 0,
+  pista: 0,
+  pose: -1,
+  ultimo: -1,
+  murio: 0,
+  flashPuntos: 0,
+  dano: 0,
+  agache: 0,
+  brinco: [0, 0, 0],
+  flash: [0, 0, 0],
+  estela: [],
+  anillo: null,
+  columna: null,
+  marca: null,
+  letrero: null,
+  ola: -10
+};
+
+const vista = document.getElementById("v");
+const interno = document.createElement("canvas");
+interno.width = W;
+interno.height = H;
+const ctxInterno = interno.getContext("2d", { alpha: false });
+const imagen = ctxInterno.createImageData(W, H);
+const pixeles = imagen.data;
+let ctxVista = vista.getContext("2d", { alpha: false });
+let escalaPrev = 0;
+let dprPrev = 0;
+
+let audioCtx = null;
+let master = null;
+
+function px(x, y, c) {
+  x |= 0;
+  y |= 0;
+  if (x < 0 || y < 0 || x >= W || y >= H) return;
+  idx[y * W + x] = c;
+}
+
+function rect(x, y, w, h, c) {
+  x |= 0;
+  y |= 0;
+  w |= 0;
+  h |= 0;
+  const x0 = x < 0 ? 0 : x;
+  const y0 = y < 0 ? 0 : y;
+  const x1 = x + w > W ? W : x + w;
+  const y1 = y + h > H ? H : y + h;
+  for (let yy = y0; yy < y1; yy++) {
+    idx.fill(c, yy * W + x0, yy * W + x1);
+  }
+}
+
+/* Las partes se contornean juntas para que el sprite no quede partido. */
+function parte(x, y, w, h, c) {
+  if (w <= 0 || h <= 0) return;
+  PARTS.push(x | 0, y | 0, w | 0, h | 0, c | 0);
+}
+
+function trazo() {
+  const n = PARTS.length;
+  for (let i = 0; i < n; i += 5) {
+    rect(PARTS[i] - 1, PARTS[i + 1] - 1, PARTS[i + 2] + 2, PARTS[i + 3] + 2, 0);
+  }
+  for (let i = 0; i < n; i += 5) {
+    rect(PARTS[i], PARTS[i + 1], PARTS[i + 2], PARTS[i + 3], PARTS[i + 4]);
+  }
+  PARTS.length = 0;
+}
+
+function texto(str, x, y, c, s) {
+  s = s || 1;
+  let cx = x | 0;
+  const u = String(str).toUpperCase();
+  for (let i = 0; i < u.length; i++) {
+    const ch = u[i];
+    if (ch === " ") {
+      cx += 3 * s;
+      continue;
+    }
+    const g = FONT[ch];
+    if (!g) {
+      cx += 4 * s;
+      continue;
+    }
+    for (let row = 0; row < 6; row++) {
+      const bits = g[row];
+      for (let col = 0; col < 4; col++) {
+        if (bits & (8 >> col)) rect(cx + col * s, y + row * s, s, s, c);
+      }
+    }
+    cx += 5 * s;
+  }
+}
+
+function ancho(str, s) {
+  s = s || 1;
+  let w = 0;
+  const u = String(str).toUpperCase();
+  for (let i = 0; i < u.length; i++) w += (u[i] === " " ? 3 : 5) * s;
+  return Math.max(0, w - s);
+}
+
+function centrar(str, y, c, s) {
+  texto(str, (W - ancho(str, s)) >> 1, y, c, s);
+}
+
+function sombra(str, y, c, s) {
+  const x = (W - ancho(str, s)) >> 1;
+  texto(str, x + 1, y + 1, 0, s);
+  texto(str, x, y, c, s);
+}
+
+function jx(i) {
+  return Math.round(LX + CENTERS[i] * LW);
+}
+
+function mitad() {
+  return Math.max(0.04, 0.11 - (S.ronda - 1) * 0.01);
+}
+
+function periodo() {
+  return Math.max(0.48, 1.22 - (S.ronda - 1) * 0.085);
+}
+
+function segundosMecha() {
+  return Math.max(4.4, 10.5 - (S.ronda - 1) * 0.65);
+}
+
+function guardar() {
+  try {
+    localStorage.setItem("pitch-mejor", String(S.mejor));
+  } catch (e) { /* el juego sigue sin guardar */ }
+}
+
+function sumar(n) {
+  S.puntos += n;
+  S.flashPuntos = 0.14;
+  if (S.puntos > S.mejor) {
+    S.mejor = S.puntos;
+    S.record = true;
+    guardar();
+  }
+}
+
+function letrero(textoPlano, c) {
+  S.letrero = { texto: textoPlano, vida: 0.7, c: c };
+}
+
+function burst(x, y, n, c) {
+  for (let i = 0; i < n; i++) {
+    const a = -Math.PI * 0.85 + (i / (n - 1)) * Math.PI * 0.7;
+    const v = 36 + (i % 3) * 14;
+    PARTICULAS.push({
+      x: x,
+      y: y,
+      vx: Math.cos(a) * v,
+      vy: Math.sin(a) * v,
+      vida: 0.38,
+      c: c
+    });
+  }
+  while (PARTICULAS.length > 30) PARTICULAS.shift();
+}
+
+function encenderAudio() {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!audioCtx) {
+      audioCtx = new AC();
+      master = audioCtx.createGain();
+      master.gain.value = 0.2;
+      master.connect(audioCtx.destination);
+    }
+    if (audioCtx.state === "suspended") audioCtx.resume();
+  } catch (e) {
+    audioCtx = null;
+  }
+}
+
+function beep(freq, dur, tipo, ganancia, cuando, hacia) {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = tipo;
+  o.frequency.setValueAtTime(freq, cuando);
+  if (hacia) o.frequency.exponentialRampToValueAtTime(Math.max(48, hacia), cuando + dur);
+  g.gain.setValueAtTime(ganancia, cuando);
+  g.gain.exponentialRampToValueAtTime(0.0001, cuando + dur);
+  o.connect(g);
+  g.connect(master);
+  o.start(cuando);
+  o.stop(cuando + dur + 0.02);
+}
+
+/* Notas cortas, sintetizadas. Cero archivos de audio. */
+function sonido(tipo) {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  if (tipo === "perfecto") {
+    beep(523, 0.08, "square", 0.16, t);
+    beep(784, 0.14, "square", 0.11, t + 0.03);
+  } else if (tipo === "bien") {
+    beep(494, 0.07, "square", 0.14, t);
+  } else if (tipo === "casi") {
+    beep(988, 0.04, "triangle", 0.08, t);
+  } else if (tipo === "no") {
+    beep(196, 0.18, "square", 0.12, t, 70);
+  } else if (tipo === "ronda") {
+    [523, 659, 784, 1046].forEach(function (f, i) {
+      beep(f, 0.12, "square", 0.1, t + i * 0.07);
+    });
+  } else if (tipo === "muere") {
+    beep(311, 0.28, "square", 0.13, t, 70);
+  } else if (tipo === "tick") {
+    beep(740, 0.03, "triangle", 0.04, t);
+  } else if (tipo === "va") {
+    beep(440, 0.05, "square", 0.1, t);
+    beep(660, 0.08, "square", 0.08, t + 0.05);
+  }
+}
+
+function empezar() {
+  S.modo = "juego";
+  S.ronda = 1;
+  S.puntos = 0;
+  S.record = false;
+  S.combo = 0;
+  S.mejorCombo = 0;
+  S.lleno = [0, 0, 0];
+  S.mecha = 1;
+  S.haz = 0;
+  S.dir = 1;
+  S.pase = 0;
+  S.fiesta = 0;
+  S.pista = 3.2;
+  S.estela = [0];
+  S.letrero = null;
+  S.columna = null;
+  S.anillo = null;
+  sonido("va");
+}
+
+function morir() {
+  S.modo = "muerto";
+  S.murio = S.vt;
+  S.mecha = 0;
+  S.dano = 0.28;
+  S.shake = 2.4;
+  S.agache = 0.4;
+  sonido("muere");
+}
+
+function subirCombo() {
+  S.combo += 1;
+  if (S.combo > S.mejorCombo) S.mejorCombo = S.combo;
+}
+
+function lanzarOla(x, c, fuerte) {
+  S.ola = S.vt;
+  S.columna = { x: x, vida: fuerte ? 0.32 : 0.2, c: c };
+  S.anillo = { r: 4, vida: fuerte ? 0.36 : 0.26 };
+}
+
+function triple() {
+  sumar(250);
+  letrero("TRIPLE", 7);
+  S.shake = 3;
+  S.pausa = 0.08;
+  sonido("ronda");
+  lanzarOla(jx(1), 7, true);
+  burst(jx(0), 104, 6, 5);
+  burst(jx(1), 104, 8, 7);
+  burst(jx(2), 104, 6, 5);
+}
+
+function cerrarRonda() {
+  const ganada = S.ronda;
+  S.ronda += 1;
+  S.lleno = [0, 0, 0];
+  S.mecha = 1;
+  S.pase = 0;
+  S.fiesta = 0.9;
+  sumar(200 * ganada);
+  letrero("RONDA " + S.ronda, 5);
+  S.shake = 2.2;
+  sonido("ronda");
+  lanzarOla(90, 5, true);
+}
+
+function acertar(id, perfecto) {
+  const x = Math.round(LX + S.haz * LW);
+  S.pausa = perfecto ? 0.07 : 0.04;
+  S.shake = perfecto ? 2.3 : 1.15;
+  S.brinco[id] = perfecto ? 0.16 : 0.1;
+  if (perfecto) S.flash[id] = 0.08;
+  S.marca = { x: x, vida: 0.4, c: perfecto ? 7 : 5 };
+
+  if (S.lleno[id] < 1) {
+    S.lleno[id] = Math.min(1, S.lleno[id] + (perfecto ? 0.52 : 0.36));
+    subirCombo();
+    sumar(perfecto ? 100 + S.combo * 15 : 40 + S.combo * 8);
+    letrero(perfecto ? "PERFECTO" : "BIEN", perfecto ? 7 : 5);
+    sonido(perfecto ? "perfecto" : "bien");
+    lanzarOla(x, perfecto ? 7 : 5, perfecto);
+    burst(jx(id), 100, perfecto ? 8 : 5, perfecto ? 7 : 5);
+    if ((S.pase & (1 << id)) === 0) {
+      S.pase |= 1 << id;
+      if (S.pase === 7) triple();
+    }
+  } else {
+    letrero("LISTO", 4);
+    sumar(15);
+    sonido("bien");
+    S.anillo = { r: 3, vida: 0.2 };
+  }
+
+  if (S.lleno[0] >= 1 && S.lleno[1] >= 1 && S.lleno[2] >= 1 && S.fiesta <= 0) {
+    cerrarRonda();
+  }
+}
+
+function casi() {
+  const x = Math.round(LX + S.haz * LW);
+  S.marca = { x: x, vida: 0.45, c: 7 };
+  S.columna = { x: x, vida: 0.12, c: 4 };
+  S.anillo = { r: 3, vida: 0.18 };
+  letrero("CASI", 7);
+  sumar(10);
+  sonido("casi");
+}
+
+function fallar() {
+  const x = Math.round(LX + S.haz * LW);
+  S.combo = 0;
+  S.marca = { x: x, vida: 0.4, c: 6 };
+  S.shake = 1.5;
+  S.dano = 0.18;
+  S.agache = 0.28;
+  S.anillo = null;
+  S.columna = null;
+  for (let i = 0; i < 3; i++) S.lleno[i] = Math.max(0, S.lleno[i] - 0.12);
+  letrero("NO", 6);
+  sonido("no");
+}
+
+function disparar() {
+  if (S.vt - S.ultimo < 0.07) return;
+  S.ultimo = S.vt;
+  S.pista = 0;
+  S.pose = S.vt;
+
+  let id = 0;
+  let mejorDist = 99;
+  for (let i = 0; i < 3; i++) {
+    const d = Math.abs(S.haz - CENTERS[i]);
+    if (d < mejorDist) {
+      mejorDist = d;
+      id = i;
+    }
+  }
+  const h = mitad();
+  if (mejorDist <= h * 0.42) acertar(id, true);
+  else if (mejorDist <= h) acertar(id, false);
+  else if (mejorDist <= h + 0.045) casi();
+  else fallar();
+}
+
+function actuar() {
+  encenderAudio();
+  if (S.modo === "titulo") {
+    empezar();
+    return;
+  }
+  if (S.modo === "muerto") {
+    if (S.vt - S.murio < 0.4) return;
+    empezar();
+    return;
+  }
+  disparar();
+}
+
+function moverHaz(dt, seg) {
+  S.haz += S.dir * (1 / seg) * dt;
+  let rebote = false;
+  if (S.haz >= 1) {
+    S.haz = 1;
+    S.dir = -1;
+    rebote = true;
+  } else if (S.haz <= 0) {
+    S.haz = 0;
+    S.dir = 1;
+    rebote = true;
+  }
+  S.estela.unshift(S.haz);
+  if (S.estela.length > 8) S.estela.length = 8;
+  return rebote;
+}
+
+function pasoVisual(dt) {
+  S.vt += dt;
+  S.shake *= Math.exp(-9 * dt);
+  if (S.shake < 0.12) S.shake = 0;
+  if (S.flashPuntos > 0) S.flashPuntos -= dt;
+  if (S.dano > 0) S.dano -= dt;
+  if (S.agache > 0) S.agache -= dt;
+  if (S.fiesta > 0 && S.modo === "juego") S.fiesta -= dt;
+  for (let i = 0; i < 3; i++) {
+    if (S.brinco[i] > 0) S.brinco[i] -= dt;
+    if (S.flash[i] > 0) S.flash[i] -= dt;
+  }
+  if (S.anillo) {
+    S.anillo.r += dt * 78;
+    S.anillo.vida -= dt;
+    if (S.anillo.vida <= 0) S.anillo = null;
+  }
+  if (S.columna) {
+    S.columna.vida -= dt;
+    if (S.columna.vida <= 0) S.columna = null;
+  }
+  if (S.marca) {
+    S.marca.vida -= dt;
+    if (S.marca.vida <= 0) S.marca = null;
+  }
+  if (S.letrero) {
+    S.letrero.vida -= dt;
+    if (S.letrero.vida <= 0) S.letrero = null;
+  }
+  for (let i = PARTICULAS.length - 1; i >= 0; i--) {
+    const p = PARTICULAS[i];
+    p.vida -= dt;
+    p.vy += 90 * dt;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    if (p.vida <= 0) PARTICULAS.splice(i, 1);
+  }
+}
+
+function paso(dt) {
+  pasoVisual(dt);
+  if (S.pausa > 0) {
+    S.pausa -= dt;
+    return;
+  }
+  if (S.modo === "titulo" || S.modo === "muerto") {
+    moverHaz(dt, 1.7);
+    return;
+  }
+  const rebote = moverHaz(dt, periodo());
+  if (rebote) {
+    S.pase = 0;
+    sonido("tick");
+  }
+  if (S.fiesta > 0) return;
+  if (S.pista > 0) S.pista -= dt;
+  S.mecha -= dt / segundosMecha();
+  if (S.mecha <= 0) morir();
+}
+
+function fondo() {
+  idx.fill(1);
+  rect(0, 36, 9, 226, 14);
+  rect(W - 9, 36, 9, 226, 14);
+  rect(4, 36, 1, 226, 0);
+  rect(W - 5, 36, 1, 226, 0);
+}
+
+function encabezado() {
+  rect(0, 0, W, 26, 2);
+  rect(0, 25, W, 1, 0);
+  rect(8, 9, 8, 8, 5);
+  if (S.modo === "juego") {
+    texto("R" + S.ronda, 20, 10, 4, 1);
+    const sc = String(S.puntos);
+    const x = W - 8 - ancho(sc, 1);
+    texto(sc, x, 10, S.flashPuntos > 0 ? 5 : 4, 1);
+    if (S.combo >= 2) {
+      const c = "X" + S.combo;
+      texto(c, x - 6 - ancho(c, 1), 10, 5, 1);
+    }
+  } else {
+    texto("PITCH", 20, 10, 4, 1);
+  }
+}
+
+function mecha() {
+  rect(8, 29, 164, 5, 0);
+  const f = S.modo === "titulo" ? 1 : Math.max(0, S.mecha);
+  const fw = Math.round(162 * f);
+  const baja = S.modo === "juego" && f < 0.28;
+  const c = baja && ((S.vt * 10) | 0) % 2 === 0 ? 4 : baja ? 6 : 5;
+  if (fw > 0) rect(9, 30, fw, 3, c);
+}
+
+function lamparas() {
+  /* La luz persigue al haz. Solo la más cercana se enciende en lima. */
+  rect(18, 44, 144, 2, 0);
+  for (let i = 0; i < 7; i++) {
+    const u = (i + 0.5) / 7;
+    const d = Math.abs(u - S.haz);
+    const c = d < 0.08 ? 5 : d < 0.18 ? 7 : 19;
+    const x = 22 + i * 20;
+    rect(x + 2, 38, 2, 6, 0);
+    rect(x, 36, 6, 4, c);
+  }
+}
+
+function dibujarJuez(i) {
+  const cx = jx(i);
+  const pop = S.brinco[i] > 0 ? 2 : 0;
+  const y = 50 - pop;
+  const mira = Math.max(-1, Math.min(1, Math.round((S.haz - CENTERS[i]) * 10)));
+  const lleno = S.lleno[i] >= 1;
+  const flash = S.flash[i] > 0;
+  const traje = flash ? 15 : lleno ? 5 : [2, 16, 0][i];
+  const sombraColor = flash ? 3 : [19, 5, 18][i];
+
+  parte(cx - 14, y + 24, 28, 26, traje);
+  parte(cx - 8, y + 8, 16, 16, 8);
+  if (i === 1) {
+    parte(cx - 11, y + 3, 22, 10, 16);
+    parte(cx - 7, y + 9, 14, 13, 8);
+  } else {
+    parte(cx - 9, y + 1, 18, 8, 9);
+  }
+  trazo();
+
+  rect(cx - 7, y + 10, 3, 12, 17);
+  const ey = y + 15;
+  px(cx - 4 + mira, ey, 0);
+  px(cx + 3 + mira, ey, 0);
+  if (lleno) rect(cx - 3, ey + 5, 6, 1, 5);
+  else if (i === 0) rect(cx - 3, ey + 5, 6, 1, 9);
+  else rect(cx - 2, ey + 4, 3, 1, 9);
+
+  if (i === 0) {
+    rect(cx - 7, ey - 2, 6, 4, 0);
+    rect(cx + 2, ey - 2, 6, 4, 0);
+    rect(cx - 6, ey - 1, 4, 2, 3);
+    rect(cx + 3, ey - 1, 4, 2, 3);
+    px(cx - 1, ey, 4);
+    px(cx - 4 + mira, ey, 0);
+    px(cx + 3 + mira, ey, 0);
+  }
+  if (i === 2) rect(cx + 5, y + 30, 3, 3, 7);
+  if (!flash) rect(cx - 14, y + 24, 4, 18, sombraColor);
+  if (i !== 1) rect(cx - 4, y + 2, 6, 1, 4);
+}
+
+function mesa() {
+  rect(0, 96, W, 18, 10);
+  for (let y = 96; y < 114; y += 4) rect(0, y, W, 1, 11);
+  rect(62, 96, 2, 18, 0);
+  rect(116, 96, 2, 18, 0);
+  for (let i = 0; i < 3; i++) {
+    const cx = jx(i);
+    rect(cx - 16, 102, 32, 7, 0);
+    rect(cx - 15, 103, 30, 5, 3);
+    const fw = Math.round(30 * Math.min(1, S.lleno[i]));
+    if (fw > 0) rect(cx - 15, 103, fw, 5, S.lleno[i] >= 1 ? 7 : 5);
+  }
+}
+
+function carril() {
+  rect(8, 116, 164, 22, 0);
+  rect(LX, 118, LW, 18, 1);
+  const h = mitad();
+  const y = 120;
+  for (let i = 0; i < 3; i++) {
+    const c = CENTERS[i];
+    const zw = h * 2 * LW;
+    const zx = LX + (c - h) * LW;
+    rect(Math.round(zx), y, Math.max(2, Math.round(zw)), 14, S.lleno[i] >= 1 ? 19 : 2);
+    if (S.lleno[i] < 1) {
+      const cw = Math.max(2, Math.round(h * 0.84 * LW));
+      const pulse = ((S.vt * 7) | 0) % 2 === 0 ? 5 : 7;
+      rect(Math.round(LX + c * LW - cw / 2), y + 3, cw, 8, pulse);
+    } else {
+      rect(jx(i) - 1, y + 5, 3, 4, 5);
+    }
+  }
+  for (let i = S.estela.length - 1; i >= 1; i--) {
+    const x = Math.round(LX + S.estela[i] * LW);
+    rect(x, 122, 2, 10, i > 4 ? 19 : 3);
+  }
+  const x = Math.round(LX + S.haz * LW);
+  rect(x - 1, 119, 4, 16, 5);
+  rect(x, 121, 2, 12, 4);
+  const s = S.dir;
+  px(x + s * 6, 127, 4);
+  px(x + s * 5, 126, 4);
+  px(x + s * 5, 128, 4);
+  if (S.marca) rect(S.marca.x | 0, 114, 2, 3, S.marca.c);
+}
+
+function escenario() {
+  const x0 = 90;
+  const y0 = 142;
+  const y1 = 268;
+  for (let y = y0; y <= y1; y++) {
+    const t = (y - y0) / (y1 - y0);
+    const hw = (6 + t * 34) | 0;
+    for (let x = x0 - hw; x <= x0 + hw; x += 1) {
+      if (((x + y * 3) & 7) === 0) px(x, y, 3);
+    }
+  }
+  rect(0, 262, W, 30, 10);
+  for (let y = 262; y < 290; y += 5) rect(0, y, W, 1, 11);
+  rect(0, 290, W, 2, 5);
+  rect(0, 292, W, H - 292, 18);
+  for (let i = 0; i < 14; i++) {
+    const on = Math.sin(S.vt * 2.4 - i * 0.55) > 0.45;
+    rect(12 + i * 12, 284, 4, 3, on ? 4 : 9);
+  }
+}
+
+function dibujarJugador() {
+  const cx = 90;
+  const bob = Math.sin(S.vt * 3.1) > 0 ? 0 : 1;
+  const habla = S.vt - S.pose < 0.14;
+  const aplasta = habla ? 2 : 0;
+  const pies = 284 + bob;
+  for (let i = -14; i <= 14; i += 2) px(cx + i, pies + 1, 0);
+
+  const cadera = pies - 5;
+  parte(cx - 11, cadera, 8, 5, 0);
+  parte(cx + 3, cadera, 8, 5, 0);
+  parte(cx - 10, cadera - 13, 6, 13, 18);
+  parte(cx + 4, cadera - 13, 6, 13, 18);
+  const alto = 18 - aplasta;
+  const ty = cadera - 13 - alto;
+  parte(cx - 13, ty, 26, alto, 5);
+  if (habla) {
+    parte(cx - 19, ty + 2, 6, 12, 5);
+    parte(cx + 13, ty - 12, 6, 16, 5);
+  } else {
+    parte(cx - 19, ty + 3, 6, 14, 5);
+    parte(cx + 13, ty + 3, 6, 14, 5);
+  }
+  const hy = ty - 16;
+  parte(cx - 8, hy, 16, 16, 8);
+  parte(cx - 9, hy - 4, 18, 8, 9);
+  trazo();
+
+  rect(cx - 13, ty, 4, alto, 16);
+  rect(cx - 3, ty + 3, 6, alto - 6, 2);
+  rect(cx - 8, hy + 2, 4, 10, 17);
+  const mira = Math.max(-1, Math.min(1, Math.round((S.haz - 0.5) * 3)));
+  rect(cx - 6, hy + 5, 4, 1, 9);
+  rect(cx + 2, hy + 5, 4, 1, 9);
+  px(cx - 5 + mira, hy + 7, 0);
+  px(cx + 3 + mira, hy + 7, 0);
+  if (habla) rect(cx - 2, hy + 11, 5, 2, 6);
+  else rect(cx - 2, hy + 11, 4, 1, 9);
+  rect(cx - 5, hy - 3, 7, 1, 4);
+  rect(cx - 10, cadera + 3, 6, 1, 4);
+  rect(cx + 4, cadera + 3, 6, 1, 4);
+
+  const mx = cx + 22;
+  rect(mx, hy + 4, 2, cadera - hy - 6, 0);
+  parte(mx - 3, hy - 2, 8, 8, 4);
+  trazo();
+  rect(mx - 1, hy, 4, 3, 5);
+}
+
+function publico() {
+  const n = 11;
+  const prog = (S.vt - S.ola) / 0.5;
+  const viva = prog >= 0 && prog <= 1;
+  for (let i = 0; i < n; i++) {
+    const u = i / (n - 1);
+    const cresta = viva ? Math.max(0, 1 - Math.abs(u - prog) * 6) : 0;
+    const idle = S.agache > 0 ? 0 : 1 + (S.combo >= 4 ? 1 : 0);
+    const bob = Math.round(Math.sin(S.vt * 2.3 + i * 0.75) * idle);
+    const alto = i % 3 === 0 ? 3 : 0;
+    const x = 14 + i * 14;
+    const y = 298 - alto + bob - Math.round(cresta * 4) + (S.agache > 0 ? 2 : 0);
+    parte(x, y, 12, 12, 12);
+    parte(x + 2, y - 8, 8, 8, i % 4 === 0 ? 17 : 12);
+    trazo();
+    const ojo = cresta > 0.4 ? 5 : 4;
+    px(x + 4, y - 5, ojo);
+    px(x + 7, y - 5, ojo);
+  }
+}
+
+function efectos() {
+  if (S.anillo) {
+    const n = 18;
+    const r = S.anillo.r;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      const x = Math.round(90 + Math.cos(a) * r);
+      const y = Math.round(250 + Math.sin(a) * r * 0.45);
+      if (y < 150 || y > 300) continue;
+      px(x, y, i % 2 ? 5 : 4);
+    }
+  }
+  for (let i = 0; i < PARTICULAS.length; i++) {
+    const p = PARTICULAS[i];
+    const s = p.vida > 0.2 ? 2 : 1;
+    rect(p.x | 0, p.y | 0, s, s, p.c);
+  }
+}
+
+function interfaz() {
+  if (S.modo === "titulo") {
+    sombra("PITCH", 144, 4, 3);
+    sombra("CLAVA A LOS 3", 168, 5, 1);
+    if (((S.vt * 2) | 0) % 2 === 0) sombra("TOCA", 182, 4, 2);
+    centrar("CLICK O ESPACIO", 204, 3, 1);
+    if (S.mejor > 0) centrar("MEJOR " + S.mejor, 216, 4, 1);
+  } else if (S.modo === "muerto") {
+    const suma = S.lleno[0] + S.lleno[1] + S.lleno[2];
+    const cerca = suma > 1.5 || (S.lleno[0] >= 1) + (S.lleno[1] >= 1) + (S.lleno[2] >= 1) >= 2;
+    rect(16, 140, 148, 84, 0);
+    rect(16, 140, 148, 2, cerca ? 7 : 6);
+    sombra(cerca ? "CASI" : "SILENCIO", 146, cerca ? 7 : 6, 2);
+    sombra(String(S.puntos), 162, 4, 2);
+    if (S.record) centrar("RECORD", 180, 7, 1);
+    else if (S.mejor > 0) centrar("MEJOR " + S.mejor, 180, 5, 1);
+    if (cerca) centrar("TE FALTO POCO", 192, 4, 1);
+    if (S.mejorCombo >= 3) centrar("COMBO " + S.mejorCombo, 204, 5, 1);
+    if (S.vt - S.murio > 0.4 && ((S.vt * 2) | 0) % 2 === 0) centrar("TOCA", 214, 4, 1);
+  } else {
+    if (S.fiesta > 0.15) sombra("RONDA " + S.ronda, 148, 5, 2);
+    if (S.letrero && S.fiesta <= 0.15) {
+      const sube = Math.round((0.7 - S.letrero.vida) * 12);
+      sombra(S.letrero.texto, 186 - sube, S.letrero.c, 1);
+    }
+    if (S.pista > 0 && ((S.vt * 2) | 0) % 2 === 0) {
+      centrar("TOCA EN LA ZONA", 208, 4, 1);
+    }
+  }
+  if (S.dano > 0.08) {
+    rect(0, 0, W, 2, 6);
+    rect(0, H - 2, W, 2, 6);
+    rect(0, 0, 2, H, 6);
+    rect(W - 2, 0, 2, H, 6);
+  }
+}
+
+function dibujar() {
+  fondo();
+  lamparas();
+  encabezado();
+  mecha();
+  for (let i = 0; i < 3; i++) dibujarJuez(i);
+  mesa();
+  carril();
+  escenario();
+  if (S.columna) {
+    const x = S.columna.x;
+    for (let y = 120; y <= 230; y += 2) {
+      if (Math.sin(y * 0.45 - S.vt * 28) > -0.2) px(x, y, S.columna.c);
+    }
+  }
+  dibujarJugador();
+  publico();
+  efectos();
+  /* Marco azul, el mismo bloque de color del sitio. Cierra el cabinet. */
+  rect(0, 26, 2, H - 26, 2);
+  rect(W - 2, 26, 2, H - 26, 2);
+  rect(0, H - 4, W, 4, 2);
+  interfaz();
+}
+
+function presentar() {
+  for (let i = 0, n = idx.length; i < n; i++) {
+    const p = idx[i] * 3;
+    const o = i << 2;
+    pixeles[o] = RGB[p];
+    pixeles[o + 1] = RGB[p + 1];
+    pixeles[o + 2] = RGB[p + 2];
+    pixeles[o + 3] = 255;
+  }
+  ctxInterno.putImageData(imagen, 0, 0);
+
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const escala = Math.max(1, Math.floor(Math.min(window.innerWidth / W, window.innerHeight / H)));
+  if (escala !== escalaPrev || dpr !== dprPrev) {
+    escalaPrev = escala;
+    dprPrev = dpr;
+    vista.width = Math.floor(W * escala * dpr);
+    vista.height = Math.floor(H * escala * dpr);
+    vista.style.width = W * escala + "px";
+    vista.style.height = H * escala + "px";
+    ctxVista = vista.getContext("2d", { alpha: false });
+  }
+  ctxVista.imageSmoothingEnabled = false;
+  const sx = Math.round(Math.sin(S.vt * 73) * S.shake) * escala * dpr;
+  const sy = Math.round(Math.cos(S.vt * 59) * S.shake) * escala * dpr;
+  ctxVista.fillStyle = "#0a0a0a";
+  ctxVista.fillRect(0, 0, vista.width, vista.height);
+  ctxVista.drawImage(interno, sx, sy, W * escala * dpr, H * escala * dpr);
+}
+
+let reloj = performance.now();
+function cuadro(ahora) {
+  const dt = Math.min(0.033, (ahora - reloj) / 1000);
+  reloj = ahora;
+  paso(dt);
+  dibujar();
+  presentar();
+  requestAnimationFrame(cuadro);
+}
+
+addEventListener("pointerdown", function (ev) {
+  ev.preventDefault();
+  actuar();
+}, { passive: false });
+
+addEventListener("keydown", function (ev) {
+  if (ev.repeat) return;
+  if (ev.code === "Space" || ev.code === "Enter") {
+    ev.preventDefault();
+    actuar();
+  }
+});
+
+addEventListener("contextmenu", function (ev) {
+  ev.preventDefault();
+});
+
+requestAnimationFrame(cuadro);
+</script>
+</body>
+</html>
