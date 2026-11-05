@@ -60,7 +60,8 @@ const T_OUTRO = 900;
 
 /* 0 tinta, 1 muro, 2 línea, 3 azul, 4 azul sombra, 5 azul luz,
    6 lima, 7 lima sombra, 8 papel, 9 papel sombra, 10 hueco, 11 metal,
-   12 rojo, 13 agua, 14 pluma, 15 pluma clara. */
+   12 rojo, 13 agua, 14 pluma, 15 pluma clara,
+   16 cima, 17 cielo, 18 orilla, 19 sol. */
 const PAL = new Uint8ClampedArray([
   10, 10, 10,
   54, 60, 86,
@@ -77,7 +78,11 @@ const PAL = new Uint8ClampedArray([
   255, 59, 92,
   12, 156, 186,
   224, 150, 42,
-  255, 214, 156
+  255, 214, 156,
+  10, 18, 62,
+  48, 98, 188,
+  255, 168, 114,
+  255, 230, 156
 ]);
 
 const ORDEN = "ABCDEILNOPRTUV0123456789YZX";
@@ -88,9 +93,11 @@ const BITS = [
   0xF12444, 0x696996, 0x699716, 0x996222, 0xF1248F, 0x996699
 ];
 
-const FAR_Y = 98;
-const MID_Y = 126;
-const FRONT_Y = 172;
+/* Horizonte a dos tercios. El pasto solo baja para no tapar el cielo. */
+const HOR = 214;
+const FAR_Y = 238;
+const MID_Y = 268;
+const FRONT_Y = 298;
 
 const idx = new Uint8Array(W * H);
 const vista = document.getElementById("v");
@@ -430,52 +437,94 @@ function flor(wx, wy) {
   px(x, y - 1, 8);
 }
 
+/* Bandas planas: azul profundo arriba, orilla cálida en el horizonte. */
 function cielo() {
-  rectMundo(-40, 0, 260, 34, 4);
-  rectMundo(-40, 34, 260, 38, 3);
-  rectMundo(-40, 72, 260, 280, 5);
-  const x = camX(146);
-  const y = camY(20 + Math.sin(seg * 0.7) * 1.2);
+  rectMundo(-70, 0, 320, 40, 16);
+  rectMundo(-70, 36, 320, 38, 4);
+  rectMundo(-70, 70, 320, 44, 17);
+  rectMundo(-70, 110, 320, 44, 5);
+  rectMundo(-70, 150, 320, 36, 15);
+  rectMundo(-70, 182, 320, HOR - 180, 18);
   const s = cam.z;
-  elipse(x + s, y + s, 8 * s, 8 * s, 0);
-  elipse(x, y, 7 * s, 7 * s, 9);
-  elipse(x - s, y - s, 4.5 * s, 4.5 * s, 8);
-  elipse(x - 2 * s, y - 2 * s, 2 * s, 2 * s, 6);
-  for (let i = 0; i < 4; i++) {
-    const a = seg * 0.45 + i * 1.57;
-    linea(
-      x + Math.cos(a) * 9 * s, y + Math.sin(a) * 9 * s,
-      x + Math.cos(a) * 13 * s, y + Math.sin(a) * 13 * s,
-      8
-    );
-  }
+  const x = camX(46);
+  const y = camY(68 + Math.sin(seg * 0.28) * 1);
+  elipse(x, y, 32 * s, 32 * s, 15);
+  elipse(x, y, 17 * s, 17 * s, 19);
+  elipse(x - 4 * s, y - 4 * s, 7 * s, 7 * s, 8);
 }
 
+/* Masa convexa: papel, sombra y contorno de 1 px. Escala con la cámara. */
 function nube(wx, wy, r) {
   const x = camX(wx);
   const y = camY(wy);
-  const s = cam.z;
-  elipse(x + 2 * s, y + 3 * s, r * s, r * 0.42 * s, 0);
-  elipse(x - r * 0.4 * s, y + 4 * s, r * 0.58 * s, r * 0.32 * s, 0);
-  elipse(x, y + s, r * 0.92 * s, r * 0.36 * s, 9);
-  elipse(x - r * 0.36 * s, y, r * 0.5 * s, r * 0.28 * s, 8);
-  elipse(x + r * 0.2 * s, y - r * 0.08 * s, r * 0.36 * s, r * 0.2 * s, 8);
+  const a = r * cam.z;
+  solido([
+    x - a, y + a * 0.08,
+    x - a * 0.55, y - a * 0.34,
+    x - a * 0.05, y - a * 0.5,
+    x + a * 0.42, y - a * 0.3,
+    x + a, y + a * 0.06,
+    x + a * 0.4, y + a * 0.32,
+    x - a * 0.38, y + a * 0.3
+  ], 8, 0);
+  poly([
+    x - a * 0.72, y + a * 0.06,
+    x - a * 0.1, y + a * 0.02,
+    x + a * 0.55, y + a * 0.08,
+    x + a * 0.38, y + a * 0.28,
+    x - a * 0.32, y + a * 0.26
+  ], 2);
 }
 
-function nubes() {
-  const datos = [
-    [12, 14, 13, 0.75],
-    [86, 24, 16, 1.15],
-    [150, 16, 11, 0.9],
-    [48, 44, 10, 1.3]
-  ];
+function capaNube(datos, vel) {
+  const periodo = 300;
   for (let i = 0; i < datos.length; i++) {
     const d = datos[i];
-    const periodo = 250;
-    let x = d[0] + scroll.nube * d[3];
-    x = ((x % periodo) + periodo) % periodo - 36;
-    const y = d[1] + Math.sin(seg * 0.6 + i * 1.3) * 2;
+    let x = d[0] + vel * d[3];
+    x = ((x % periodo) + periodo) % periodo - 56;
+    const y = d[1] + Math.sin(seg * 0.33 + i * 1.4) * 1.3;
     nube(x, y, d[2]);
+  }
+}
+
+function nubesLejos() {
+  capaNube([
+    [24, 14, 22, 0.65],
+    [150, 22, 17, 0.9],
+    [250, 12, 19, 1.05]
+  ], scroll.colina);
+}
+
+function nubesCerca() {
+  capaNube([
+    [70, 52, 30, 0.8],
+    [210, 42, 24, 1.2]
+  ], scroll.nube);
+}
+
+/* Dos trazos. Van despacio y quedan detrás de los volcanes. */
+function pajaro(wx, wy, esc, ala) {
+  const x = camX(wx);
+  const y = camY(wy);
+  const s = esc * cam.z;
+  const w = 8 * s;
+  const al = (2.2 + ala) * s;
+  linea(x - w, y - al, x, y + al * 0.2, 0);
+  linea(x, y + al * 0.2, x + w, y - al, 0);
+}
+
+function pajaros() {
+  const banda = [
+    [24, 48, 1.15, 6],
+    [108, 62, 1, 5],
+    [164, 42, 1.25, 7]
+  ];
+  for (let i = 0; i < banda.length; i++) {
+    const d = banda[i];
+    let x = d[0] + seg * d[3];
+    x = ((x % 280) + 280) % 280 - 36;
+    const y = d[1] + Math.sin(seg * 0.6 + i) * 1.4;
+    pajaro(x, y, d[2], Math.sin(seg * 2.1 + i * 1.3));
   }
 }
 
@@ -504,25 +553,32 @@ function arbol(wx, wy) {
   poly(q, 6);
 }
 
-function colinas() {
-  cada(scroll.colina, 34, function (x, id) {
-    const alto = 8 + hash16(id, 2) * 12;
-    const y = 74;
-    const lomo = [
-      camX(x), camY(y + 6),
-      camX(x + 10), camY(y - alto * 0.35),
-      camX(x + 18), camY(y - alto),
-      camX(x + 28), camY(y - alto * 0.25),
-      camX(x + 36), camY(y + 6)
-    ];
-    solido(lomo, 4, 0);
-    poly([
-      camX(x + 12), camY(y - alto * 0.2),
-      camX(x + 18), camY(y - alto + 2),
-      camX(x + 23), camY(y - alto * 0.1)
-    ], 1);
-    if ((id % 3) === 0) arbol(x + 15, y - alto + 2);
-  });
+/* Silueta de un volcán: masa oscura, cara clara y contorno. */
+function volcan(pts, luz) {
+  const o = [];
+  for (let i = 0; i < pts.length; i += 2) o.push(camX(pts[i]), camY(pts[i + 1]));
+  solido(o, 10, 0);
+  const q = [];
+  for (let i = 0; i < luz.length; i += 2) q.push(camX(luz[i]), camY(luz[i + 1]));
+  poly(q, 1);
+}
+
+/* Tres perfiles distintos, quietos, de pie en el horizonte. */
+function volcanes() {
+  const b = HOR + 10;
+  rectMundo(-60, HOR - 1, 320, 150, 10);
+  volcan(
+    [-22, b, 14, b - 62, 40, b - 84, 62, b - 54, 98, b],
+    [-2, b - 8, 18, b - 50, 34, b - 72, 14, b - 12]
+  );
+  volcan(
+    [96, b, 128, b - 74, 156, b - 112, 198, b],
+    [112, b - 10, 134, b - 64, 150, b - 98, 122, b - 14]
+  );
+  volcan(
+    [20, b + 2, 62, b - 112, 76, b - 148, 100, b - 140, 122, b - 102, 166, b + 2],
+    [34, b - 12, 64, b - 96, 74, b - 132, 48, b - 18]
+  );
 }
 
 /* Tres franjas horizontales. Lejos y frente van a la derecha; el medio, a la izquierda. */
@@ -550,9 +606,9 @@ function pradera() {
   rectMundo(-50, 308, 280, 1 / cam.z, 0);
   cada(scroll.frente, 8, function (x, id) {
     const sway = Math.sin(seg * 2.3 + id * 0.7) * 2;
-    hoja(x, 210, 18 + hash16(id, 1) * 26, sway, 2.2);
-    hoja(x + 3, 252, 22 + hash16(id, 2) * 34, -sway * 0.8, 2.4);
-    hoja(x - 1, 312, 28 + hash16(id, 4) * 46, sway * 0.6, 2.5);
+    hoja(x, 272, 18 + hash16(id, 1) * 26, sway, 2.2);
+    hoja(x + 3, 296, 22 + hash16(id, 2) * 34, -sway * 0.8, 2.4);
+    hoja(x - 1, 318, 28 + hash16(id, 4) * 46, sway * 0.6, 2.5);
   });
 }
 
@@ -860,9 +916,10 @@ function hud() {
 
 function escena(v) {
   cielo();
-  polen();
-  nubes();
-  colinas();
+  nubesLejos();
+  nubesCerca();
+  pajaros();
+  volcanes();
   capaPasto(FAR_Y, scroll.lejos, 16, 2, 16, 26, 2.3);
   for (let i = 0; i < patos.length; i++) {
     if (patos[i].estado === "cae") dibujarPato(patos[i]);
@@ -1344,7 +1401,7 @@ function cuadro(ahora) {
     logica(dt);
   }
   const v = cuadroCamara();
-  idx.fill(5);
+  idx.fill(16);
   escena(v);
   if (v.k > 0.03) visor(v);
   dibujarPerro();
