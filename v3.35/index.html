@@ -62,7 +62,8 @@ const T_OUTRO = 900;
    6 lima, 7 lima sombra, 8 papel, 9 papel sombra, 10 hueco, 11 metal,
    12 rojo, 13 agua, 14 pluma, 15 pluma clara,
    16 cima, 17 cielo, 18 orilla, 19 sol,
-   20 volcán sombra, 21 volcán luz, 22 volcán punta. */
+   20 volcán sombra, 21 volcán luz, 22 volcán punta,
+   23 verde sombra, 24 verde, 25 verde luz. */
 const PAL = new Uint8ClampedArray([
   10, 10, 10,
   54, 60, 86,
@@ -86,7 +87,10 @@ const PAL = new Uint8ClampedArray([
   255, 230, 156,
   170, 160, 204,
   206, 198, 228,
-  234, 228, 244
+  234, 228, 244,
+  22, 104, 56,
+  58, 156, 72,
+  118, 204, 96
 ]);
 
 const ORDEN = "ABCDEILNOPRTUV0123456789YZX";
@@ -542,19 +546,55 @@ function polen() {
   }
 }
 
-function arbol(wx, wy) {
-  const sway = Math.sin(seg * 1.5 + wx * 0.03) * 1.2;
-  rectMundo(wx, wy, 3, 10, 7);
-  rectMundo(wx, wy, 1, 10, 6);
-  const c = wx + 1 + sway;
-  const copa = [c, wy + 1, c - 7, wy - 5, c, wy - 15, c + 8, wy - 4];
-  const o = [];
-  for (let i = 0; i < copa.length; i += 2) o.push(camX(copa[i]), camY(copa[i + 1]));
-  solido(o, 7, 0);
-  const luz = [c, wy, c - 3, wy - 5, c, wy - 11, c + 4, wy - 3];
-  const q = [];
-  for (let i = 0; i < luz.length; i += 2) q.push(camX(luz[i]), camY(luz[i + 1]));
-  poly(q, 6);
+/* Copa redonda: dos verdes y contorno de 1 px. Escala con la cámara. */
+function copa(wx, wy, rx, ry, base, luz) {
+  const x = camX(wx);
+  const y = camY(wy);
+  const z = cam.z;
+  elipse(x, y, rx * z + 1, ry * z + 1, 0);
+  elipse(x, y, rx * z, ry * z, base);
+  elipse(x - rx * 0.28 * z, y - ry * 0.24 * z, rx * 0.55 * z, ry * 0.48 * z, luz);
+}
+
+/* Tramo de tronco: sombra cálida y brillo del lado del sol. */
+function tramo(x0, y0, x1, y1, g) {
+  const o = [
+    camX(x0 - g), camY(y0),
+    camX(x0 + g * 0.7), camY(y0),
+    camX(x1 + g * 0.42), camY(y1),
+    camX(x1 - g * 0.55), camY(y1)
+  ];
+  poly(o, 14);
+  poly([
+    camX(x0 - g * 0.9), camY(y0),
+    camX(x0 - g * 0.1), camY(y0),
+    camX(x1 - g * 0.02), camY(y1),
+    camX(x1 - g * 0.48), camY(y1)
+  ], 15);
+  borde(o, 0);
+}
+
+/* A la derecha, alto, lejos del cartel y del centro de los patos. */
+function arbolAlto() {
+  const s = Math.sin(seg * 1.28);
+  const x = 168;
+  const nudo = 118;
+  tramo(x, FAR_Y, x + s * 0.9, nudo, 3.5);
+  const ax = x - 34 + s * 2.4;
+  const bx = x + 6 + s * 2.2;
+  const cx = x - 16 + s * 2.8;
+  tramo(x + s * 0.5, nudo + 6, ax, 84, 1.7);
+  tramo(x + s * 0.4, nudo, bx, 82, 1.6);
+  tramo(x + s * 0.7, nudo - 6, cx, 64, 1.8);
+  copa(ax, 74, 12, 11, 23, 25);
+  copa(bx, 72, 11, 10, 23, 25);
+  copa(cx, 50, 15, 13, 23, 25);
+}
+
+/* A la izquierda, redondo, apoyado en la línea del pasto. */
+function arbusto() {
+  const s = Math.sin(seg * 1.45 + 1) * 0.8;
+  copa(30 + s, FAR_Y - 12, 16, 12, 24, 25);
 }
 
 /* Lejos y claros: sombra, cara de luz y punta. El contorno va al final. */
@@ -936,6 +976,8 @@ function escena(v) {
     if (patos[i].estado === "cae") dibujarPato(patos[i]);
   }
   capaPasto(MID_Y, scroll.medio, 13, 2, 18, 32, 2.5);
+  arbolAlto();
+  arbusto();
   for (let i = 0; i < patos.length; i++) {
     const p = patos[i];
     if (p.estado === "vuela" || p.estado === "golpe" || p.estado === "huye") dibujarPato(p);
