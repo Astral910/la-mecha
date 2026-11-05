@@ -1,0 +1,1374 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0A0A0A">
+<title>CAZA</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #0A0A0A;
+    overflow: hidden;
+    touch-action: none;
+    overscroll-behavior: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+  body {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  canvas {
+    touch-action: none;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    cursor: crosshair;
+  }
+</style>
+</head>
+<body>
+<canvas id="v"></canvas>
+<script>
+"use strict";
+
+/* CAZA — WarioWare de la mira.
+   1. Descanso: panorama entero, pasto en capas, vidas y puntos.
+   2. La mira sube, el tubo se cierra y la cámara entra al mismo campo.
+   3. Microjuego: patos que cruzan la retícula. Toque, Espacio o Enter.
+   4. La mira baja y se lee el resultado en el panorama.
+   5. Siguiente ronda, un poco más rápida. 4 vidas.
+   El zoom es de cámara (coordenadas), no un estirado del lienzo.
+   Pato, perro y escopeta son siluetas propias. */
+
+const W = 180;
+const H = 320;
+const CX = 90;
+const CY = 108;
+const RVIS = 74;
+const AIM_X = 90;
+const AIM_Y = 88;
+const ZJ = 1.62;
+const T_DESCANSO = 1000;
+const T_INTRO = 1040;
+const T_OUTRO = 900;
+
+/* 0 tinta, 1 muro, 2 línea, 3 azul, 4 azul sombra, 5 azul luz,
+   6 lima, 7 lima sombra, 8 papel, 9 papel sombra, 10 hueco, 11 metal,
+   12 rojo, 13 agua, 14 pluma, 15 pluma clara. */
+const PAL = new Uint8ClampedArray([
+  10, 10, 10,
+  54, 60, 86,
+  186, 194, 224,
+  43, 53, 255,
+  16, 22, 120,
+  162, 168, 255,
+  215, 255, 58,
+  88, 114, 12,
+  247, 247, 242,
+  150, 152, 144,
+  18, 22, 40,
+  78, 84, 112,
+  255, 59, 92,
+  12, 156, 186,
+  224, 150, 42,
+  255, 214, 156
+]);
+
+const ORDEN = "ABCDEILNOPRTUV0123456789YZX";
+const BITS = [
+  0x699F99, 0xE9E99E, 0x698896, 0xE9999E, 0xF8E88F, 0xF4444F, 0x88888F,
+  0x9DB999, 0x699996, 0xE99E88, 0xE99EA9, 0xF44444, 0x999996, 0x999964,
+  0x69BD96, 0x4C444E, 0x69124F, 0xE16196, 0x26AF22, 0xF8E196, 0x68E996,
+  0xF12444, 0x696996, 0x699716, 0x996222, 0xF1248F, 0x996699
+];
+
+const FAR_Y = 98;
+const MID_Y = 126;
+const FRONT_Y = 172;
+
+const idx = new Uint8Array(W * H);
+const vista = document.getElementById("v");
+const interno = document.createElement("canvas");
+interno.width = W;
+interno.height = H;
+const ctxInterno = interno.getContext("2d", { alpha: false });
+const imagen = ctxInterno.createImageData(W, H);
+const pixeles = imagen.data;
+let ctxVista = vista.getContext("2d", { alpha: false });
+let escalaPrev = 0;
+let dprPrev = 0;
+let seg = 0;
+let antes = 0;
+let ac = null;
+let master = null;
+let ruido = null;
+let pausa = 0;
+
+const cam = { z: 1, fx: AIM_X, fy: AIM_Y, ax: CX, ay: AIM_Y, sx: 0, sy: 0 };
+const scroll = { lejos: 0, medio: 0, frente: 0, nube: 0, colina: 0 };
+const patos = [];
+const plumas = [];
+const anillos = [];
+
+const S = {
+  modo: "titulo",
+  t: 0,
+  juegoT: 0,
+  vidas: 4,
+  ronda: 0,
+  puntos: 0,
+  racha: 0,
+  balas: 0,
+  balasMax: 0,
+  resultado: "",
+  retroceso: 0,
+  fogonazo: 0,
+  flashRojo: 0,
+  pop: 0,
+  marcaBien: 0,
+  limite: 8000
+};
+
+function px(x, y, c) {
+  x |= 0;
+  y |= 0;
+  if (x < 0 || y < 0 || x >= W || y >= H) return;
+  idx[y * W + x] = c;
+}
+
+function lleno(x, y, w, h, c) {
+  x |= 0;
+  y |= 0;
+  w |= 0;
+  h |= 0;
+  if (w <= 0 || h <= 0) return;
+  let x0 = x < 0 ? 0 : x;
+  let y0 = y < 0 ? 0 : y;
+  let x1 = x + w;
+  let y1 = y + h;
+  if (x1 > W) x1 = W;
+  if (y1 > H) y1 = H;
+  if (x1 <= x0 || y1 <= y0) return;
+  for (let yy = y0; yy < y1; yy++) idx.fill(c, yy * W + x0, yy * W + x1);
+}
+
+function marco(x, y, w, h, c) {
+  lleno(x, y, w, 1, c);
+  lleno(x, y + h - 1, w, 1, c);
+  lleno(x, y, 1, h, c);
+  lleno(x + w - 1, y, 1, h, c);
+}
+
+function linea(x0, y0, x1, y1, c) {
+  x0 |= 0;
+  y0 |= 0;
+  x1 |= 0;
+  y1 |= 0;
+  let dx = Math.abs(x1 - x0);
+  let dy = Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1;
+  const sy = y0 < y1 ? 1 : -1;
+  let e = dx - dy;
+  for (;;) {
+    px(x0, y0, c);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = e << 1;
+    if (e2 > -dy) { e -= dy; x0 += sx; }
+    if (e2 < dx) { e += dx; y0 += sy; }
+  }
+}
+
+function poly(pts, c) {
+  const n = pts.length >> 1;
+  if (n < 3) return;
+  let y0 = 999;
+  let y1 = -999;
+  for (let i = 0; i < n; i++) {
+    const y = pts[i * 2 + 1];
+    if (y < y0) y0 = y;
+    if (y > y1) y1 = y;
+  }
+  y0 = y0 < 0 ? 0 : y0 | 0;
+  y1 = y1 >= H ? H - 1 : y1 | 0;
+  for (let y = y0; y <= y1; y++) {
+    let xL = 999;
+    let xR = -999;
+    let hit = 0;
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      let yA = pts[i * 2 + 1];
+      let yB = pts[j * 2 + 1];
+      let xA = pts[i * 2];
+      let xB = pts[j * 2];
+      if (yA === yB) continue;
+      if (yA > yB) {
+        const ty = yA; yA = yB; yB = ty;
+        const tx = xA; xA = xB; xB = tx;
+      }
+      if (y < yA || y >= yB) continue;
+      const x = xA + (xB - xA) * ((y - yA) / (yB - yA));
+      if (x < xL) xL = x;
+      if (x > xR) xR = x;
+      hit++;
+    }
+    if (hit < 2) continue;
+    let a = xL | 0;
+    let b = xR | 0;
+    if (a < 0) a = 0;
+    if (b >= W) b = W - 1;
+    if (b >= a) idx.fill(c, y * W + a, y * W + b + 1);
+  }
+}
+
+function borde(pts, c) {
+  const n = pts.length >> 1;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    linea(pts[i * 2], pts[i * 2 + 1], pts[j * 2], pts[j * 2 + 1], c);
+  }
+}
+
+function solido(pts, fill, ink) {
+  poly(pts, fill);
+  if (ink >= 0) borde(pts, ink);
+}
+
+function elipse(cx, cy, rx, ry, c) {
+  if (rx < 0.5 || ry < 0.5) return;
+  const y1 = Math.ceil(ry);
+  const ry2 = ry * ry;
+  for (let y = -y1; y <= y1; y++) {
+    const t = 1 - (y * y) / ry2;
+    if (t <= 0) continue;
+    const ww = Math.sqrt(t) * rx;
+    const yy = (cy + y) | 0;
+    if (yy < 0 || yy >= H) continue;
+    let x0 = (cx - ww) | 0;
+    let x1 = (cx + ww) | 0;
+    if (x0 < 0) x0 = 0;
+    if (x1 >= W) x1 = W - 1;
+    if (x1 >= x0) idx.fill(c, yy * W + x0, yy * W + x1 + 1);
+  }
+}
+
+function ovalo(cx, cy, rx, ry, ang, fill, ink) {
+  if (rx < 0.7 || ry < 0.7) return;
+  const pasos = rx + ry < 8 ? 8 : 12;
+  const co = Math.cos(ang);
+  const si = Math.sin(ang);
+  const pts = [];
+  for (let i = 0; i < pasos; i++) {
+    const a = (i / pasos) * Math.PI * 2;
+    const lx = Math.cos(a) * rx;
+    const ly = Math.sin(a) * ry;
+    pts.push(cx + lx * co - ly * si, cy + lx * si + ly * co);
+  }
+  poly(pts, fill);
+  if (ink >= 0) borde(pts, ink);
+}
+
+function anillo(cx, cy, rx, ry, c, g) {
+  if (rx < 1 || ry < 1) return;
+  const pasos = (Math.max(rx, ry) * 6) | 0;
+  const gr = g < 1 ? 1 : g;
+  for (let i = 0; i < pasos; i++) {
+    const a = (i / pasos) * Math.PI * 2;
+    const co = Math.cos(a);
+    const si = Math.sin(a);
+    for (let k = 0; k < gr; k++) {
+      px(cx + co * (rx - k), cy + si * (ry - k * (ry / Math.max(rx, 1))), c);
+    }
+  }
+}
+
+function arco(cx, cy, r, a0, a1, c) {
+  const pasos = 18;
+  for (let i = 0; i <= pasos; i++) {
+    const a = a0 + (a1 - a0) * (i / pasos);
+    px(cx + Math.cos(a) * r, cy + Math.sin(a) * r, c);
+    px(cx + Math.cos(a) * (r - 1), cy + Math.sin(a) * (r - 1), c);
+  }
+}
+
+function texto(s, x, y, sc, c, sombra) {
+  if (sombra) texto(s, x + sc, y + sc, sc, 0, false);
+  for (let i = 0; i < s.length; i++) {
+    const k = ORDEN.indexOf(s.charAt(i));
+    if (k < 0) continue;
+    const g = BITS[k];
+    const ox = x + i * 5 * sc;
+    for (let row = 0; row < 6; row++) {
+      const bits = (g >> ((5 - row) * 4)) & 15;
+      for (let col = 0; col < 4; col++) {
+        if (bits & (8 >> col)) lleno(ox + col * sc, y + row * sc, sc, sc, c);
+      }
+    }
+  }
+}
+
+function anchoTexto(s, sc) {
+  return s.length * 5 * sc - sc;
+}
+
+function centroTexto(s, y, sc, c) {
+  texto(s, (W - anchoTexto(s, sc)) >> 1, y, sc, c, true);
+}
+
+function grito(s, y, sc, letra, bordeC, fondo) {
+  const w = anchoTexto(s, sc);
+  const x = (W - w) >> 1;
+  const h = 6 * sc;
+  lleno(x - 5, y - 4, w + 10, h + 8, fondo);
+  marco(x - 5, y - 4, w + 10, h + 8, bordeC);
+  texto(s, x, y, sc, letra, false);
+}
+
+function suave(u) {
+  if (u < 0) return 0;
+  if (u > 1) return 1;
+  return u * u * (3 - 2 * u);
+}
+
+function factorZoom() {
+  if (S.modo === "intro") return S.t / T_INTRO;
+  if (S.modo === "juego") return 1;
+  if (S.modo === "outro") return 1 - S.t / T_OUTRO;
+  return 0;
+}
+
+/* La mira sube y encoge. En juego queda fija, con un balanceo del campo. */
+function cuadroCamara() {
+  const k = factorZoom();
+  const e = suave(k);
+  const kick = S.retroceso;
+  const vy = 170 + (CY - 170) * e - kick;
+  const radio = 240 + (RVIS - 240) * e;
+  cam.z = 1 + (ZJ - 1) * e;
+  cam.fx = AIM_X;
+  cam.fy = AIM_Y;
+  cam.ax = CX;
+  cam.ay = AIM_Y + (vy - AIM_Y) * e;
+  if (S.modo === "juego") {
+    cam.sx = Math.sin(seg * 0.55) * 1.4;
+    cam.sy = Math.cos(seg * 0.42) * 1.1 - kick * 0.35;
+  } else {
+    cam.sx = 0;
+    cam.sy = 0;
+  }
+  return { e: e, k: k, x: CX, y: vy, r: radio };
+}
+
+function camX(wx) {
+  return (wx - cam.fx) * cam.z + cam.ax + cam.sx;
+}
+
+function camY(wy) {
+  return (wy - cam.fy) * cam.z + cam.ay + cam.sy;
+}
+
+function rectMundo(wx, wy, ww, wh, c) {
+  lleno(camX(wx), camY(wy), Math.max(1, ww * cam.z), Math.max(1, wh * cam.z), c);
+}
+
+function cada(despl, espacio, fn) {
+  const origen = Math.floor(despl / espacio);
+  const frac = despl - origen * espacio;
+  const i1 = Math.ceil(240 / espacio) + 2;
+  for (let i = -3; i <= i1; i++) fn(i * espacio + frac, i - origen);
+}
+
+function hash16(id, sal) {
+  const n = (id * 17 + sal) | 0;
+  return ((n % 16) + 16) % 16 / 15;
+}
+
+/* Hoja de pasto: dos tonos y contorno de 1 px de pantalla, a cualquier zoom. */
+function hoja(wx, base, alto, sway, ancho) {
+  if (alto < 4) return;
+  const xp = wx + sway;
+  const yp = base - alto;
+  const cuerpo = [
+    camX(wx - ancho), camY(base),
+    camX(wx + ancho), camY(base),
+    camX(xp), camY(yp)
+  ];
+  solido(cuerpo, 7, -1);
+  poly([
+    camX(wx - ancho), camY(base),
+    camX(wx - ancho * 0.05), camY(base),
+    camX(xp - sway * 0.2), camY(yp + 0.6)
+  ], 6);
+  borde(cuerpo, 0);
+}
+
+function mata(wx, base, alto) {
+  const pts = [
+    camX(wx), camY(base),
+    camX(wx + 11), camY(base - 1),
+    camX(wx + 5), camY(base - alto)
+  ];
+  solido(pts, 7, 0);
+  poly([
+    camX(wx + 1), camY(base - 1),
+    camX(wx + 5), camY(base - 1),
+    camX(wx + 5), camY(base - alto + 2)
+  ], 6);
+}
+
+function flor(wx, wy) {
+  const x = camX(wx) | 0;
+  const y = camY(wy) | 0;
+  px(x, y, 8);
+  px(x - 1, y, 6);
+  px(x + 1, y, 6);
+  px(x, y - 1, 8);
+}
+
+function cielo() {
+  rectMundo(-40, 0, 260, 34, 4);
+  rectMundo(-40, 34, 260, 38, 3);
+  rectMundo(-40, 72, 260, 280, 5);
+  const x = camX(146);
+  const y = camY(20 + Math.sin(seg * 0.7) * 1.2);
+  const s = cam.z;
+  elipse(x + s, y + s, 8 * s, 8 * s, 0);
+  elipse(x, y, 7 * s, 7 * s, 9);
+  elipse(x - s, y - s, 4.5 * s, 4.5 * s, 8);
+  elipse(x - 2 * s, y - 2 * s, 2 * s, 2 * s, 6);
+  for (let i = 0; i < 4; i++) {
+    const a = seg * 0.45 + i * 1.57;
+    linea(
+      x + Math.cos(a) * 9 * s, y + Math.sin(a) * 9 * s,
+      x + Math.cos(a) * 13 * s, y + Math.sin(a) * 13 * s,
+      8
+    );
+  }
+}
+
+function nube(wx, wy, r) {
+  const x = camX(wx);
+  const y = camY(wy);
+  const s = cam.z;
+  elipse(x + 2 * s, y + 3 * s, r * s, r * 0.42 * s, 0);
+  elipse(x - r * 0.4 * s, y + 4 * s, r * 0.58 * s, r * 0.32 * s, 0);
+  elipse(x, y + s, r * 0.92 * s, r * 0.36 * s, 9);
+  elipse(x - r * 0.36 * s, y, r * 0.5 * s, r * 0.28 * s, 8);
+  elipse(x + r * 0.2 * s, y - r * 0.08 * s, r * 0.36 * s, r * 0.2 * s, 8);
+}
+
+function nubes() {
+  const datos = [
+    [12, 14, 13, 0.75],
+    [86, 24, 16, 1.15],
+    [150, 16, 11, 0.9],
+    [48, 44, 10, 1.3]
+  ];
+  for (let i = 0; i < datos.length; i++) {
+    const d = datos[i];
+    const periodo = 250;
+    let x = d[0] + scroll.nube * d[3];
+    x = ((x % periodo) + periodo) % periodo - 36;
+    const y = d[1] + Math.sin(seg * 0.6 + i * 1.3) * 2;
+    nube(x, y, d[2]);
+  }
+}
+
+function polen() {
+  for (let i = 0; i < 7; i++) {
+    const dir = (i & 1) ? 1 : -1;
+    const sp = 14 + (i % 3) * 6;
+    const x = ((i * 31 + seg * sp * dir) % 230 + 230) % 230 - 24;
+    const y = 36 + (i * 8) % 28;
+    px(camX(x), camY(y), i & 1 ? 8 : 2);
+  }
+}
+
+function arbol(wx, wy) {
+  const sway = Math.sin(seg * 1.5 + wx * 0.03) * 1.2;
+  rectMundo(wx, wy, 3, 10, 7);
+  rectMundo(wx, wy, 1, 10, 6);
+  const c = wx + 1 + sway;
+  const copa = [c, wy + 1, c - 7, wy - 5, c, wy - 15, c + 8, wy - 4];
+  const o = [];
+  for (let i = 0; i < copa.length; i += 2) o.push(camX(copa[i]), camY(copa[i + 1]));
+  solido(o, 7, 0);
+  const luz = [c, wy, c - 3, wy - 5, c, wy - 11, c + 4, wy - 3];
+  const q = [];
+  for (let i = 0; i < luz.length; i += 2) q.push(camX(luz[i]), camY(luz[i + 1]));
+  poly(q, 6);
+}
+
+function colinas() {
+  cada(scroll.colina, 34, function (x, id) {
+    const alto = 8 + hash16(id, 2) * 12;
+    const y = 74;
+    const lomo = [
+      camX(x), camY(y + 6),
+      camX(x + 10), camY(y - alto * 0.35),
+      camX(x + 18), camY(y - alto),
+      camX(x + 28), camY(y - alto * 0.25),
+      camX(x + 36), camY(y + 6)
+    ];
+    solido(lomo, 4, 0);
+    poly([
+      camX(x + 12), camY(y - alto * 0.2),
+      camX(x + 18), camY(y - alto + 2),
+      camX(x + 23), camY(y - alto * 0.1)
+    ], 1);
+    if ((id % 3) === 0) arbol(x + 15, y - alto + 2);
+  });
+}
+
+/* Tres franjas horizontales. Lejos y frente van a la derecha; el medio, a la izquierda. */
+function capaPasto(base, despl, espacio, hojas, minA, maxA, ancho) {
+  const lip = 2 / cam.z;
+  const filo = 1 / cam.z;
+  rectMundo(-50, base + 11, 280, 4, 10);
+  rectMundo(-50, base, 280, 12, 7);
+  rectMundo(-50, base, 280, lip, 6);
+  rectMundo(-50, base, 280, filo, 0);
+  cada(despl, espacio, function (x, id) {
+    const alt = minA + hash16(id, base) * (maxA - minA);
+    const sway = Math.sin(seg * 2.15 + id * 0.85) * 2.2;
+    hoja(x, base, alt, sway, ancho);
+    if (hojas > 1) hoja(x + 5, base, alt * 0.62, Math.sin(seg * 2.6 + id) * 1.7, ancho * 0.85);
+    if (hojas > 2) hoja(x - 4, base, alt * 0.78, -sway * 0.55, ancho * 0.9);
+    if ((id & 1) === 0) flor(x + 8, base + 6);
+    if (id % 4 === 0) mata(x + 1, base, 6 + (Math.abs(id) % 4));
+  });
+}
+
+function pradera() {
+  rectMundo(-50, 308, 280, 16, 7);
+  rectMundo(-50, 308, 280, 2 / cam.z, 6);
+  rectMundo(-50, 308, 280, 1 / cam.z, 0);
+  cada(scroll.frente, 8, function (x, id) {
+    const sway = Math.sin(seg * 2.3 + id * 0.7) * 2;
+    hoja(x, 210, 18 + hash16(id, 1) * 26, sway, 2.2);
+    hoja(x + 3, 252, 22 + hash16(id, 2) * 34, -sway * 0.8, 2.4);
+    hoja(x - 1, 312, 28 + hash16(id, 4) * 46, sway * 0.6, 2.5);
+  });
+}
+
+function tinteDe(c, tinte) {
+  if (tinte === 1) {
+    if (c === 0) return 0;
+    if (c === 8 || c === 15 || c === 9) return 8;
+    return 6;
+  }
+  if (tinte === 2) {
+    if (c === 0) return 0;
+    if (c === 8 || c === 15 || c === 9) return 8;
+    return 12;
+  }
+  return c;
+}
+
+function formaPato(wx, wy, s, ang, dir, pts, fill, ink) {
+  const co = Math.cos(ang);
+  const si = Math.sin(ang);
+  const o = [];
+  for (let i = 0; i < pts.length; i += 2) {
+    const lx = pts[i] * s * dir;
+    const ly = pts[i + 1] * s;
+    const gx = wx + lx * co - ly * si;
+    const gy = wy + lx * si + ly * co;
+    o.push(camX(gx), camY(gy));
+  }
+  solido(o, fill, ink);
+}
+
+function localPato(wx, wy, s, ang, dir, lx, ly) {
+  const co = Math.cos(ang);
+  const si = Math.sin(ang);
+  const px0 = lx * s * dir;
+  const py0 = ly * s;
+  return {
+    x: wx + px0 * co - py0 * si,
+    y: wy + px0 * si + py0 * co
+  };
+}
+
+/* Pico de pala, cresta y dos ojos. No es el pato de cartucho. */
+function pato(wx, wy, s, ala, ang, dir, tinte) {
+  function t(c) { return tinteDe(c, tinte); }
+  function f(pts, fill, ink) {
+    formaPato(wx, wy, s, ang, dir, pts, t(fill), ink < 0 ? -1 : t(ink));
+  }
+  if (ala) {
+    f([-6, -1, -9, -22, -16, -2], 14, 0);
+    f([6, -1, 11, -24, 18, -1], 15, 0);
+    f([-6, -2, -8, -14, -13, -2], 15, -1);
+    f([6, -2, 10, -15, 15, -2], 8, -1);
+  } else {
+    f([-4, 2, -26, 5, -20, 11], 14, 0);
+    f([4, 2, 28, 6, 22, 12], 15, 0);
+    f([-5, 3, -16, 6, -12, 10], 15, -1);
+    f([5, 3, 18, 7, 14, 11], 8, -1);
+  }
+  f([-3, 2, -13, 6, -9, 0], 14, 0);
+  ovalo(camX(wx), camY(wy), 12 * s * cam.z, 8 * s * cam.z, ang, t(14), t(0));
+  const panza = localPato(wx, wy, s, ang, dir, 1, 3);
+  ovalo(camX(panza.x), camY(panza.y), 7 * s * cam.z, 3.6 * s * cam.z, ang, t(15), -1);
+  const cabeza = localPato(wx, wy, s, ang, dir, 7, -8);
+  ovalo(camX(cabeza.x), camY(cabeza.y), 6 * s * cam.z, 5.2 * s * cam.z, ang, t(14), t(0));
+  const gorra = localPato(wx, wy, s, ang, dir, 5, -11);
+  ovalo(camX(gorra.x), camY(gorra.y), 3.2 * s * cam.z, 1.8 * s * cam.z, ang, t(10), -1);
+  f([4, -11, 2, -17, 8, -12], 15, 0);
+  f([7, -10, 9, -16, 12, -11], 8, 0);
+  f([11, -8, 19, -7, 17, -4], 9, 0);
+  f([11, -5, 17, -4, 15, -2], 15, 0);
+  const e1 = localPato(wx, wy, s, ang, dir, 4, -9);
+  const e2 = localPato(wx, wy, s, ang, dir, 8, -8);
+  const er = Math.max(0.8, 1.2 * s) * cam.z;
+  ovalo(camX(e1.x), camY(e1.y), er, er, 0, t(8), t(0));
+  ovalo(camX(e2.x), camY(e2.y), er, er, 0, t(8), t(0));
+  px(camX(e1.x), camY(e1.y), 0);
+  px(camX(e2.x), camY(e2.y), 0);
+}
+
+function posPato(p) {
+  const u = (S.juegoT - p.inicio) / p.dur;
+  const x = p.x0 + (p.x1 - p.x0) * u;
+  const y = p.y0 + (p.y1 - p.y0) * u + Math.sin((u - 0.5) * Math.PI * 2) * p.amp;
+  return { x: x, y: y };
+}
+
+function donde(p) {
+  if (p.estado === "golpe" || p.estado === "cae") return { x: p.wx, y: p.wy };
+  const q = posPato(p);
+  if (p.estado === "vuela" || p.estado === "huye") q.y += p.ala ? -1.5 : 1.5;
+  return q;
+}
+
+function dibujarPato(p) {
+  if (p.estado === "espera" || p.estado === "listo") return;
+  const q = donde(p);
+  const s = p.estado === "cae" ? p.s * (1 - Math.min(1, p.t / 360) * 0.35) : p.s;
+  const ang = p.estado === "cae" ? p.ang : 0;
+  pato(q.x, q.y, s, p.ala, ang, p.dir, p.tinte);
+}
+
+function patoLejos(e) {
+  if (e > 0.28) return;
+  const x = ((seg * 16) % 230) - 24;
+  const y = 30 + Math.sin(seg * 1.3) * 2;
+  const ala = ((seg * 5) | 0) & 1;
+  pato(x, y, 0.38, ala, 0, 1, 0);
+}
+
+function dibujarPlumas() {
+  for (let i = 0; i < plumas.length; i++) {
+    const f = plumas[i];
+    const x = camX(f.x) | 0;
+    const y = camY(f.y) | 0;
+    px(x, y, 0);
+    px(x + 1, y, f.c);
+    px(x, y + 1, f.c);
+    px(x + 2, y - 1, f.c);
+  }
+}
+
+/* Orejas caídas y hocico largo. Solo asoma si la oleada se escapa. */
+function perro(x, y, dir) {
+  function X(lx) { return x + lx * dir; }
+  const wag = Math.sin(seg * 8.2) * 6;
+  solido([X(-4), y + 16, X(-20), y + 6 + wag, X(-16), y + 18 + wag * 0.3, X(-2), y + 24], 8, 0);
+  solido([X(-12), y + 8, X(8), y + 6, X(6), y + 34, X(-14), y + 36], 8, 0);
+  ovalo(X(-2), y + 18, 4, 3, 0, 0, -1);
+  solido([X(2), y + 18, X(16), y + 14, X(14), y + 26, X(0), y + 26], 8, 0);
+  ovalo(X(14), y + 22, 3, 2.2, 0, 9, 0);
+  solido([X(-14), y - 6, X(-4), y - 10, X(-10), y + 26, X(-20), y + 30], 10, 0);
+  solido([X(2), y - 8, X(11), y - 3, X(7), y + 28, X(0), y + 20], 10, 0);
+  ovalo(X(1), y, 12, 10, 0, 8, 0);
+  solido([X(8), y - 1, X(32), y + 2, X(30), y + 10, X(8), y + 8], 8, 0);
+  solido([X(12), y + 5, X(28), y + 6, X(26), y + 10, X(11), y + 9], 9, -1);
+  ovalo(X(30), y + 5, 3.2, 2.4, 0, 0, -1);
+  px(X(29), y + 4, 8);
+  ovalo(X(5), y - 2, 2, 2, 0, 0, -1);
+  px(X(5), y - 2, 8);
+}
+
+function dibujarPerro() {
+  if (S.modo !== "outro" || S.resultado !== "mal" || S.t < 460) return;
+  const k = (S.t - 460) / 420;
+  if (k <= 0 || k >= 1) return;
+  const pop = Math.sin(Math.min(1, k) * Math.PI);
+  perro(100, 312 - pop * 78, 1);
+}
+
+function tapaTubo(cx, cy, r) {
+  const r2 = r * r;
+  for (let y = 0; y < H; y++) {
+    const dy = y - cy;
+    const dentro = r2 - dy * dy;
+    const fila = y * W;
+    if (dentro <= 0) {
+      idx.fill(0, fila, fila + W);
+      continue;
+    }
+    const hw = Math.sqrt(dentro);
+    let x0 = Math.ceil(cx - hw);
+    let x1 = Math.floor(cx + hw);
+    if (x0 < 0) x0 = 0;
+    if (x1 > W - 1) x1 = W - 1;
+    if (x0 > 0) idx.fill(0, fila, fila + x0);
+    if (x1 < W - 1) idx.fill(0, fila + x1 + 1, fila + W);
+  }
+}
+
+function reticula(x, y, c) {
+  linea(x - 26, y + 1, x - 7, y + 1, 0);
+  linea(x + 7, y + 1, x + 26, y + 1, 0);
+  linea(x + 1, y - 20, x + 1, y - 6, 0);
+  linea(x + 1, y + 6, x + 1, y + 18, 0);
+  linea(x - 26, y, x - 7, y, c);
+  linea(x + 7, y, x + 26, y, c);
+  linea(x, y - 20, x, y - 6, c);
+  linea(x, y + 6, x, y + 18, c);
+  for (let i = 1; i <= 3; i++) {
+    const d = 6 + i * 5;
+    linea(x - 3, y - d + 1, x + 3, y - d + 1, 0);
+    linea(x - 3, y - d, x + 3, y - d, c);
+  }
+  px(x, y, c);
+  px(x - 1, y, 0);
+  px(x + 1, y, 0);
+  px(x, y - 1, 0);
+  px(x, y + 1, 0);
+}
+
+/* Escopeta propia: dos cañones y culata corta bajo el aro. */
+function escopeta(scopeY, radio, k) {
+  const y = scopeY + Math.min(radio, 86) + (1 - k) * 220;
+  if (y > H + 12) return;
+  const x = CX;
+  lleno(x - 24, y, 48, 7, 11);
+  marco(x - 24, y, 48, 7, 0);
+  lleno(x - 22, y + 1, 12, 3, 9);
+  solido([x - 16, y + 6, x + 16, y + 7, x + 12, y + 22, x - 12, y + 21], 11, 0);
+  lleno(x - 14, y + 8, 6, 8, 8);
+  lleno(x - 11, y + 20, 9, 42, 1);
+  lleno(x + 2, y + 20, 9, 42, 1);
+  marco(x - 11, y + 20, 9, 42, 0);
+  marco(x + 2, y + 20, 9, 42, 0);
+  lleno(x - 11, y + 20, 3, 42, 11);
+  lleno(x + 2, y + 20, 3, 42, 11);
+  lleno(x - 10, y + 58, 7, 3, 0);
+  lleno(x + 3, y + 58, 7, 3, 0);
+  solido([x - 18, y + 16, x - 8, y + 14, x - 6, y + 86, x - 20, y + 90], 1, 0);
+  lleno(x - 16, y + 24, 5, 48, 9);
+}
+
+function colorCruz() {
+  if (S.flashRojo > 0) return ((S.flashRojo / 55) | 0) % 2 === 0 ? 12 : 8;
+  if (hayZona()) return 6;
+  return 8;
+}
+
+function visor(v) {
+  tapaTubo(v.x, v.y, v.r);
+  const lima = hayZona();
+  anillo(v.x, v.y, v.r + 1, v.r + 1, 0, 1);
+  anillo(v.x, v.y, v.r + 3, v.r + 3, lima ? 6 : 11, 2);
+  anillo(v.x, v.y, v.r + 5, v.r + 5, 9, 1);
+  anillo(v.x, v.y, v.r + 6, v.r + 6, 0, 1);
+  anillo(v.x, v.y, v.r - 1, v.r - 1, 10, 1);
+  if (v.e > 0.72) {
+    arco(v.x, v.y, v.r - 7, -2.55, -1.25, 8);
+    arco(v.x, v.y, v.r - 9, -2.4, -1.45, 9);
+  }
+  if (S.fogonazo > 0) {
+    arco(v.x, v.y, v.r - 2, 0.15, 1.15, 8);
+    arco(v.x, v.y, v.r - 2, 2.0, 2.9, 15);
+  }
+  escopeta(v.y, v.r, v.e);
+  if (v.e > 0.8) reticula(CX, CY - S.retroceso, colorCruz());
+}
+
+function vidas(x, y) {
+  for (let i = 0; i < 4; i++) {
+    const xx = x + i * 12;
+    const viva = i < S.vidas;
+    const alerta = !viva && i === S.vidas && S.flashRojo > 0 && ((S.flashRojo / 70) | 0) % 2 === 0;
+    if (alerta) {
+      lleno(xx, y, 8, 8, 12);
+      marco(xx, y, 8, 8, 0);
+    } else if (viva) {
+      lleno(xx, y, 8, 8, 6);
+      marco(xx, y, 8, 8, 0);
+      px(xx + 2, y + 2, 8);
+    } else {
+      marco(xx, y, 8, 8, 11);
+      linea(xx + 1, y + 1, xx + 6, y + 6, 11);
+      linea(xx + 6, y + 1, xx + 1, y + 6, 11);
+    }
+  }
+}
+
+function dibujarBalas() {
+  if (S.modo !== "juego" || S.balasMax <= 0) return;
+  const paso = 7;
+  let x = 6;
+  const y = 18;
+  for (let i = 0; i < S.balasMax; i++) {
+    const vivo = i < S.balas;
+    lleno(x, y, 5, 8, vivo ? 9 : 1);
+    lleno(x, y, 5, 3, vivo ? 14 : 11);
+    marco(x, y, 5, 8, 0);
+    if (vivo) px(x + 1, y + 1, 8);
+    x += paso;
+  }
+}
+
+function hud() {
+  vidas(6, 6);
+  if (S.modo !== "titulo") {
+    const s = String(S.puntos);
+    const sc = S.pop > 0 ? 3 : 2;
+    texto(s, W - 8 - anchoTexto(s, sc), 6, sc, 6, false);
+  }
+  if (S.racha >= 2 && (S.modo === "juego" || S.modo === "outro")) {
+    texto("X" + S.racha, 58, 8, 2, 8, false);
+  }
+  if (S.modo === "titulo") grito("TOCA", 168, 3, 6, 8, 0);
+  if (S.modo === "descanso") {
+    grito("CAZA", 138, 3, 8, 6, 0);
+    const n = String(S.ronda + 1);
+    texto(n, (W - anchoTexto(n, 3)) >> 1, 178, 3, 6, true);
+  }
+  if (S.modo === "juego" && hayZona()) grito("YA", 198, 3, 0, 8, 6);
+  if (S.modo === "outro" && S.resultado === "bien") grito("BIEN", 132, 3, 0, 8, 6);
+  if (S.modo === "fin") {
+    centroTexto(String(S.puntos), 40, 3, 8);
+    grito("OTRA", 168, 3, 0, 8, 6);
+  }
+  dibujarBalas();
+  for (let i = 0; i < anillos.length; i++) {
+    const a = anillos[i];
+    const k = a.t / 180;
+    if (k >= 1) continue;
+    anillo(a.x, a.y, 3 + k * 9, 3 + k * 9, k < 0.45 ? 8 : 2, 1);
+  }
+}
+
+function escena(v) {
+  cielo();
+  polen();
+  nubes();
+  colinas();
+  capaPasto(FAR_Y, scroll.lejos, 16, 2, 16, 26, 2.3);
+  for (let i = 0; i < patos.length; i++) {
+    if (patos[i].estado === "cae") dibujarPato(patos[i]);
+  }
+  capaPasto(MID_Y, scroll.medio, 13, 2, 18, 32, 2.5);
+  for (let i = 0; i < patos.length; i++) {
+    const p = patos[i];
+    if (p.estado === "vuela" || p.estado === "golpe" || p.estado === "huye") dibujarPato(p);
+  }
+  dibujarPlumas();
+  capaPasto(FRONT_Y, scroll.frente, 10, 3, 24, 52, 2.7);
+  pradera();
+  patoLejos(v.e);
+}
+
+function enZona(p) {
+  if (S.modo !== "juego" || p.estado !== "vuela") return false;
+  return Math.abs(S.juegoT - p.tCentro) <= p.media;
+}
+
+function hayZona() {
+  if (S.resultado) return false;
+  for (let i = 0; i < patos.length; i++) if (enZona(patos[i])) return true;
+  return false;
+}
+
+function distCentro(p) {
+  const q = donde(p);
+  const x = camX(q.x);
+  const y = camY(q.y);
+  return Math.hypot(x - CX, y - (CY - S.retroceso));
+}
+
+function mejorBlanco() {
+  let mejor = null;
+  let mejorD = 1e9;
+  for (let i = 0; i < patos.length; i++) {
+    const p = patos[i];
+    if (!enZona(p)) continue;
+    const d = distCentro(p);
+    if (d < mejorD) {
+      mejorD = d;
+      mejor = p;
+    }
+  }
+  return mejor;
+}
+
+function quedaVivo() {
+  for (let i = 0; i < patos.length; i++) {
+    const e = patos[i].estado;
+    if (e === "espera" || e === "vuela") return true;
+  }
+  return false;
+}
+
+function ruta(tipo) {
+  const x = AIM_X;
+  const y = AIM_Y;
+  if (tipo === 0) return { x0: x - 112, y0: y, x1: x + 112, y1: y, amp: 3.5 };
+  if (tipo === 1) return { x0: x + 112, y0: y - 8, x1: x - 112, y1: y + 8, amp: 2.5 };
+  if (tipo === 2) return { x0: x - 96, y0: y + 30, x1: x + 96, y1: y - 30, amp: 0 };
+  return { x0: x + 22, y0: y + 42, x1: x - 22, y1: y - 42, amp: 0 };
+}
+
+function prepararOleada() {
+  const n = Math.min(4, 1 + S.ronda);
+  const dur = Math.max(1680, 5200 - S.ronda * 700);
+  const paso = Math.max(200, 1080 - S.ronda * 120);
+  patos.length = 0;
+  plumas.length = 0;
+  anillos.length = 0;
+  let fin = 1200;
+  for (let i = 0; i < n; i++) {
+    const tipo = i % 4;
+    const r = ruta(tipo);
+    const largo = Math.hypot(r.x1 - r.x0, r.y1 - r.y0) || 1;
+    const velS = (largo / dur) * 1000 * ZJ;
+    const media = Math.max(90, (18 / velS) * 1000);
+    const inicio = 320 + i * (dur * 0.42 + paso * 0.35);
+    const tCentro = inicio + dur * 0.5;
+    patos.push({
+      tipo: tipo,
+      x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y1, amp: r.amp,
+      dur: dur,
+      inicio: inicio,
+      tCentro: tCentro,
+      media: media,
+      dir: r.x1 >= r.x0 ? 1 : -1,
+      s: n === 1 ? 0.96 : 0.84,
+      ala: i & 1,
+      flap: i * 37,
+      ang: 0,
+      estado: "espera",
+      tinte: 0,
+      t: 0,
+      wx: AIM_X,
+      wy: AIM_Y,
+      pitido: 0
+    });
+    const bordeT = tCentro + media + 800;
+    if (bordeT > fin) fin = bordeT;
+  }
+  S.balas = n + 1;
+  S.balasMax = n + 1;
+  S.limite = fin;
+  S.resultado = "";
+  S.flashRojo = 0;
+}
+
+function estallar(wx, wy) {
+  for (let i = 0; i < 7; i++) {
+    const a = -Math.PI / 2 + (Math.random() - 0.5) * 2.1;
+    const sp = 26 + Math.random() * 36;
+    plumas.push({
+      x: wx,
+      y: wy,
+      vx: Math.cos(a) * sp,
+      vy: Math.sin(a) * sp,
+      t: 0,
+      vida: 200 + (i % 3) * 24,
+      c: i & 1 ? 14 : 15
+    });
+  }
+}
+
+function soltarGolpes() {
+  for (let i = 0; i < patos.length; i++) {
+    const p = patos[i];
+    if (p.estado !== "golpe") continue;
+    p.estado = "cae";
+    p.t = 0;
+    p.tinte = 0;
+    p.ang = 0;
+    estallar(p.wx, p.wy);
+  }
+}
+
+function moverCaida(p, dt) {
+  p.t += dt;
+  const k = Math.min(1, p.t / 340);
+  const dir = (p.x1 - p.x0) >= 0 ? 1 : -1;
+  p.wy += (34 + k * 150) * dt / 1000;
+  p.wx += dir * 10 * dt / 1000;
+  p.ang += dt * 0.02;
+  if (p.t >= 380) p.estado = "listo";
+}
+
+function moverPlumas(dt) {
+  for (let i = plumas.length - 1; i >= 0; i--) {
+    const f = plumas[i];
+    f.t += dt;
+    if (f.t > f.vida) {
+      plumas.splice(i, 1);
+      continue;
+    }
+    f.vy += 48 * dt / 1000;
+    f.x += f.vx * dt / 1000;
+    f.y += f.vy * dt / 1000;
+  }
+}
+
+function asegurar() {
+  if (ac) {
+    if (ac.state === "suspended") ac.resume();
+    return;
+  }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  try { ac = new AC(); } catch (e) { return; }
+  master = ac.createGain();
+  master.gain.value = 0.22;
+  master.connect(ac.destination);
+  const n = (ac.sampleRate * 0.08) | 0;
+  ruido = ac.createBuffer(1, n, ac.sampleRate);
+  const d = ruido.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+}
+
+function tono(freq, dur, tipo, vol, cuando, destino) {
+  if (!ac) return;
+  const t = cuando == null ? ac.currentTime : cuando;
+  const o = ac.createOscillator();
+  const g = ac.createGain();
+  o.type = tipo;
+  o.frequency.setValueAtTime(Math.max(40, freq), t);
+  if (destino) o.frequency.exponentialRampToValueAtTime(Math.max(40, destino), t + dur);
+  g.gain.setValueAtTime(Math.max(0.001, vol), t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g);
+  g.connect(master);
+  o.start(t);
+  o.stop(t + dur + 0.02);
+}
+
+function ruidoCorto(tipo, hz, dur, vol, espera) {
+  if (!ac || !ruido) return;
+  const src = ac.createBufferSource();
+  src.buffer = ruido;
+  const f = ac.createBiquadFilter();
+  f.type = tipo;
+  f.frequency.value = hz;
+  const g = ac.createGain();
+  const t0 = ac.currentTime + (espera || 0);
+  g.gain.setValueAtTime(vol, t0);
+  g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+  src.connect(f);
+  f.connect(g);
+  g.connect(master);
+  src.start(t0);
+  src.stop(t0 + dur + 0.02);
+}
+
+function sndDisparo() {
+  ruidoCorto("lowpass", 340, 0.14, 0.5, 0);
+  tono(100, 0.1, "sine", 0.2, null, 42);
+  ruidoCorto("highpass", 1600, 0.035, 0.28, 0.08);
+}
+
+function sndSeco() {
+  ruidoCorto("highpass", 980, 0.03, 0.24, 0);
+}
+
+function sndAla(freq) {
+  ruidoCorto("bandpass", freq, 0.03, 0.05, 0);
+}
+
+function sndEscape() {
+  tono(420, 0.07, "square", 0.1, null, 170);
+  tono(140, 0.2, "sawtooth", 0.12, null, 48);
+}
+
+function sndFanfarria() {
+  if (!ac) return;
+  const t = ac.currentTime;
+  tono(523, 0.07, "square", 0.14, t);
+  tono(659, 0.07, "square", 0.14, t + 0.07);
+  tono(784, 0.14, "square", 0.16, t + 0.14);
+}
+
+function acertar(p) {
+  const d = distCentro(p);
+  const perfecto = d <= 8;
+  const pts = (perfecto ? 100 : 40) + S.racha * (perfecto ? 15 : 8);
+  S.puntos += pts;
+  S.racha += 1;
+  S.pop = 240;
+  const q = posPato(p);
+  p.wx = q.x;
+  p.wy = q.y;
+  p.estado = "golpe";
+  p.tinte = 1;
+  p.t = 0;
+  p.ang = 0;
+  pausa = 100;
+  S.retroceso = 6;
+  S.fogonazo = 100;
+  sndDisparo();
+  tono(perfecto ? 880 : 640, 0.06, "square", 0.1);
+  if (!quedaVivo()) {
+    S.resultado = "bien";
+    S.marcaBien = S.juegoT;
+  }
+}
+
+function fallar(p) {
+  if (S.resultado) return;
+  S.resultado = "mal";
+  S.vidas -= 1;
+  if (S.vidas < 0) S.vidas = 0;
+  S.racha = 0;
+  S.flashRojo = 300;
+  S.retroceso = 3;
+  p.estado = "huye";
+  p.tinte = 2;
+  p.t = 0;
+  sndEscape();
+}
+
+function disparar() {
+  if (S.modo !== "juego" || pausa > 0 || S.resultado) return;
+  const blanco = mejorBlanco();
+  if (blanco) {
+    if (S.balas <= 0) {
+      sndSeco();
+      return;
+    }
+    S.balas -= 1;
+    acertar(blanco);
+    return;
+  }
+  if (S.balas <= 0) {
+    sndSeco();
+    return;
+  }
+  S.balas -= 1;
+  S.racha = 0;
+  sndSeco();
+  anillos.push({ t: 0, x: CX, y: CY - S.retroceso });
+}
+
+function entrarJuego() {
+  S.modo = "juego";
+  S.t = 0;
+  S.juegoT = 0;
+  S.resultado = "";
+  S.flashRojo = 0;
+  tono(494, 0.04, "square", 0.1);
+}
+
+function empezarOutro() {
+  if (S.modo !== "juego") return;
+  S.modo = "outro";
+  S.t = 0;
+  if (S.resultado === "bien") sndFanfarria();
+}
+
+function cerrarOutro() {
+  if (S.vidas <= 0) {
+    S.modo = "fin";
+    S.t = 0;
+    tono(96, 0.28, "square", 0.16, null, 40);
+    return;
+  }
+  if (S.resultado === "bien") S.ronda += 1;
+  prepararOleada();
+  S.modo = "descanso";
+  S.t = 0;
+}
+
+function empezar() {
+  S.vidas = 4;
+  S.ronda = 0;
+  S.puntos = 0;
+  S.racha = 0;
+  S.retroceso = 0;
+  S.fogonazo = 0;
+  S.flashRojo = 0;
+  S.pop = 0;
+  pausa = 0;
+  prepararOleada();
+  S.modo = "descanso";
+  S.t = 0;
+  tono(230, 0.08, "sine", 0.12);
+}
+
+function actualizarJuego(dt) {
+  for (let i = 0; i < patos.length; i++) {
+    const p = patos[i];
+    if (p.estado === "espera" && S.juegoT >= p.inicio) p.estado = "vuela";
+    if (p.estado === "vuela") {
+      p.flap += dt;
+      const paso = Math.max(76, p.dur / 16);
+      if (p.flap >= paso) {
+        p.flap -= paso;
+        p.ala ^= 1;
+        sndAla(600 + p.tipo * 55 + (p.ala ? 40 : 0));
+      }
+      if (!p.pitido && enZona(p)) {
+        p.pitido = 1;
+        tono(932, 0.04, "square", 0.11);
+      }
+      if (!S.resultado && S.juegoT > p.tCentro + p.media) fallar(p);
+    } else if (p.estado === "cae") {
+      moverCaida(p, dt);
+    }
+  }
+  if (S.resultado === "mal") {
+    S.flashRojo -= dt;
+    if (S.flashRojo <= 0) empezarOutro();
+  } else if (S.resultado === "bien") {
+    if (pausa <= 0 && S.juegoT > S.marcaBien + 480) empezarOutro();
+  } else if (!quedaVivo() && S.juegoT > 240) {
+    S.resultado = "bien";
+    S.marcaBien = S.juegoT;
+  } else if (!S.resultado && S.juegoT > S.limite) {
+    let suelto = null;
+    for (let i = 0; i < patos.length; i++) {
+      if (patos[i].estado === "vuela") suelto = patos[i];
+    }
+    if (suelto) fallar(suelto);
+    else {
+      S.resultado = "bien";
+      S.marcaBien = S.juegoT;
+    }
+  }
+}
+
+function logica(dt) {
+  if (S.modo === "descanso") {
+    if (S.t >= T_DESCANSO) {
+      S.modo = "intro";
+      S.t = 0;
+      tono(170, 0.1, "triangle", 0.07, null, 320);
+    }
+    return;
+  }
+  if (S.modo === "intro") {
+    if (S.t >= T_INTRO) entrarJuego();
+    return;
+  }
+  if (S.modo === "juego") {
+    actualizarJuego(dt);
+    return;
+  }
+  if (S.modo === "outro" && S.t >= T_OUTRO) cerrarOutro();
+}
+
+function pulso(e) {
+  if (e && e.preventDefault) e.preventDefault();
+  asegurar();
+  if (S.modo === "titulo" || S.modo === "fin") {
+    empezar();
+    return;
+  }
+  if (S.modo === "juego") disparar();
+}
+
+function presentar() {
+  for (let i = 0, n = idx.length; i < n; i++) {
+    const p = idx[i] * 3;
+    const o = i << 2;
+    pixeles[o] = PAL[p];
+    pixeles[o + 1] = PAL[p + 1];
+    pixeles[o + 2] = PAL[p + 2];
+    pixeles[o + 3] = 255;
+  }
+  ctxInterno.putImageData(imagen, 0, 0);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const escala = Math.max(1, Math.floor(Math.min(window.innerWidth / W, window.innerHeight / H)));
+  if (escala !== escalaPrev || dpr !== dprPrev) {
+    escalaPrev = escala;
+    dprPrev = dpr;
+    vista.width = Math.floor(W * escala * dpr);
+    vista.height = Math.floor(H * escala * dpr);
+    vista.style.width = W * escala + "px";
+    vista.style.height = H * escala + "px";
+    ctxVista = vista.getContext("2d", { alpha: false });
+  }
+  ctxVista.imageSmoothingEnabled = false;
+  ctxVista.fillStyle = "#0A0A0A";
+  ctxVista.fillRect(0, 0, vista.width, vista.height);
+  ctxVista.drawImage(interno, 0, 0, W, H, 0, 0, vista.width, vista.height);
+}
+
+function cuadro(ahora) {
+  if (!antes) antes = ahora;
+  let dt = ahora - antes;
+  if (dt > 34) dt = 34;
+  if (dt < 0) dt = 0;
+  antes = ahora;
+  seg += dt / 1000;
+  const segDt = dt / 1000;
+  scroll.lejos += 28 * segDt;
+  scroll.medio -= 46 * segDt;
+  scroll.frente += 14 * segDt;
+  scroll.nube -= 18 * segDt;
+  scroll.colina -= 8 * segDt;
+  if (S.fogonazo > 0) S.fogonazo -= dt;
+  if (S.pop > 0) S.pop -= dt;
+  if (S.retroceso > 0) {
+    S.retroceso -= dt * 0.048;
+    if (S.retroceso < 0) S.retroceso = 0;
+  }
+  for (let i = anillos.length - 1; i >= 0; i--) {
+    anillos[i].t += dt;
+    if (anillos[i].t > 200) anillos.splice(i, 1);
+  }
+  moverPlumas(dt);
+  S.t += dt;
+  if (pausa > 0) {
+    pausa -= dt;
+    if (pausa <= 0) {
+      pausa = 0;
+      soltarGolpes();
+    }
+  } else {
+    if (S.modo === "juego") S.juegoT += dt;
+    logica(dt);
+  }
+  const v = cuadroCamara();
+  idx.fill(5);
+  escena(v);
+  if (v.k > 0.03) visor(v);
+  dibujarPerro();
+  hud();
+  presentar();
+  requestAnimationFrame(cuadro);
+}
+
+vista.addEventListener("pointerdown", pulso, { passive: false });
+addEventListener("pointerdown", function (e) {
+  if (e.target === vista) return;
+  if (S.modo === "titulo" || S.modo === "fin") pulso(e);
+}, { passive: false });
+addEventListener("keydown", function (ev) {
+  if (ev.repeat) return;
+  if (ev.code !== "Space" && ev.code !== "Enter") return;
+  pulso(ev);
+});
+addEventListener("contextmenu", function (ev) { ev.preventDefault(); });
+addEventListener("touchmove", function (ev) { ev.preventDefault(); }, { passive: false });
+addEventListener("touchstart", function (ev) { ev.preventDefault(); }, { passive: false });
+addEventListener("gesturestart", function (ev) { ev.preventDefault(); }, { passive: false });
+addEventListener("wheel", function (ev) { ev.preventDefault(); }, { passive: false });
+requestAnimationFrame(cuadro);
+</script>
+</body>
+</html>
