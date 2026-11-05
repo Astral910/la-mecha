@@ -110,11 +110,11 @@ const BITS = [
   0xF12444, 0x696996, 0x699716, 0x996222, 0xF1248F, 0x996699
 ];
 
-/* Horizonte a dos tercios. El pasto solo baja para no tapar el cielo. */
-const HOR = 214;
-const FAR_Y = 238;
-const MID_Y = 268;
-const FRONT_Y = 298;
+/* Horizonte cerca del tercio alto: mucho cielo y un campo ancho debajo. */
+const HOR = 126;
+const FAR_Y = 188;
+const MID_Y = 236;
+const FRONT_Y = 286;
 
 const idx = new Uint8Array(W * H);
 const vista = document.getElementById("v");
@@ -449,18 +449,18 @@ function hojaCurva(wx, base, largo, ancho, doblez, sombra, clara, brillo) {
 
 /* Bandas planas: azul profundo arriba, orilla cálida en el horizonte. */
 function cielo() {
-  rectMundo(-70, 0, 320, 40, 16);
-  rectMundo(-70, 36, 320, 38, 4);
-  rectMundo(-70, 70, 320, 44, 17);
-  rectMundo(-70, 110, 320, 44, 5);
-  rectMundo(-70, 150, 320, 36, 15);
-  rectMundo(-70, 182, 320, HOR - 180, 18);
+  rectMundo(-70, 0, 320, 18, 16);
+  rectMundo(-70, 16, 320, 20, 4);
+  rectMundo(-70, 34, 320, 24, 17);
+  rectMundo(-70, 56, 320, 24, 5);
+  rectMundo(-70, 78, 320, 22, 15);
+  rectMundo(-70, 98, 320, HOR - 96, 18);
   const s = cam.z;
   const x = camX(46);
-  const y = camY(68 + Math.sin(seg * 0.28) * 1);
-  elipse(x, y, 32 * s, 32 * s, 15);
-  elipse(x, y, 17 * s, 17 * s, 19);
-  elipse(x - 4 * s, y - 4 * s, 7 * s, 7 * s, 8);
+  const y = camY(46 + Math.sin(seg * 0.28) * 1);
+  elipse(x, y, 26 * s, 26 * s, 15);
+  elipse(x, y, 14 * s, 14 * s, 19);
+  elipse(x - 3 * s, y - 3 * s, 6 * s, 6 * s, 8);
 }
 
 /* Masa convexa: papel, sombra y contorno de 1 px. Escala con la cámara. */
@@ -589,30 +589,31 @@ function masaCopa(wx, wy, rx, ry) {
   copa(wx, wy - ry * 0.05, rx, ry * 0.96, 24, 25);
 }
 
-/* A la derecha, alto, lejos del cartel y del centro de los patos. */
+/* A la derecha, en el campo. La copa no entra en el cartel. */
 function arbolAlto() {
-  const x = 166;
+  const x = 158;
+  const pie = 248;
   const s = viento(x, 0);
-  const pie = FAR_Y;
-  const nudo = 128;
-  tramo(x, pie + 2, x + s * 0.12, pie - 12, 5.5, 4.1);
-  tramo(x + s * 0.06, pie - 8, x + s * 0.4, nudo, 4.0, 2.3);
-  const ax = x - 18 + s * 0.85;
-  const bx = x + 12 + s * 0.7;
-  const cx = x - 4 + s;
-  tramo(x + s * 0.3, nudo + 5, ax + 5, 100, 2.6, 1.7);
-  tramo(x + s * 0.25, nudo + 1, bx - 3, 98, 2.5, 1.6);
-  tramo(x + s * 0.35, nudo - 3, cx, 82, 2.3, 1.5);
-  masaCopa(ax, 90, 16, 14);
-  masaCopa(bx, 88, 15, 13);
-  masaCopa(cx, 68, 17, 15);
-  masaCopa(x - 6 + s * 0.8, 82, 14, 12);
+  const z = cam.z;
+  elipse(camX(x + 7), camY(pie + 2), 18 * z, 4.2 * z, 23);
+  tramo(x, pie + 1, x + s * 0.16, pie - 40, 6.2, 4.4);
+  tramo(x + s * 0.1, pie - 36, x + s * 0.5, pie - 86, 4.3, 2.6);
+  const c = x + s * 0.55;
+  const t = pie - 108;
+  masaCopa(c - 2, t + 8, 16, 13);
+  masaCopa(c + 11, t + 6, 14, 11);
+  masaCopa(c + 4, t - 6, 17, 14);
 }
 
-/* A la izquierda, redondo, apoyado en la línea del pasto. */
+/* A la izquierda, más bajo, con la misma sombra en el plano. */
 function arbusto() {
-  const s = viento(30, 2) * 0.75;
-  copa(30 + s, FAR_Y - 12, 16, 12, 24, 25);
+  const x = 32;
+  const y = 214;
+  const s = viento(x, 2) * 0.75;
+  const z = cam.z;
+  elipse(camX(x + 3), camY(y + 2), 13 * z, 3.4 * z, 23);
+  copa(x - 5 + s, y - 7, 12, 8, 24, 25);
+  copa(x + 8 + s * 0.8, y - 5, 10, 7, 23, 24);
 }
 
 /* Lejos y claros: sombra, cara de luz y punta. El contorno va al final. */
@@ -631,79 +632,90 @@ function volcan(pts, luz, punta) {
 
 /* Solo la franja baja del cielo. El más alto no llega a un cuarto. */
 function volcanes() {
-  const b = HOR + 4;
-  rectMundo(-60, HOR - 1, 320, 150, 10);
+  const b = HOR + 2;
   volcan(
-    [48, b, 74, b - 20, 98, b - 44, 120, b - 18, 146, b],
-    [60, b - 4, 78, b - 18, 96, b - 38, 74, b - 4],
-    [88, b - 28, 98, b - 44, 106, b - 26]
+    [48, b, 74, b - 14, 98, b - 28, 120, b - 12, 146, b],
+    [60, b - 3, 78, b - 12, 96, b - 24, 74, b - 3],
+    [88, b - 18, 98, b - 28, 106, b - 16]
   );
   volcan(
-    [-18, b, 4, b - 14, 26, b - 28, 46, b - 12, 68, b],
-    [-6, b - 3, 8, b - 12, 24, b - 24, 12, b - 3],
-    [18, b - 18, 26, b - 28, 32, b - 16]
+    [-18, b, 4, b - 10, 26, b - 18, 46, b - 8, 68, b],
+    [-6, b - 2, 8, b - 8, 24, b - 16, 12, b - 2],
+    [18, b - 12, 26, b - 18, 32, b - 10]
   );
   volcan(
-    [116, b, 138, b - 16, 158, b - 36, 176, b - 14, 198, b],
-    [126, b - 3, 142, b - 14, 156, b - 32, 138, b - 3],
-    [150, b - 24, 158, b - 36, 164, b - 22]
+    [116, b, 138, b - 12, 158, b - 22, 176, b - 10, 198, b],
+    [126, b - 2, 142, b - 10, 156, b - 18, 138, b - 2],
+    [150, b - 14, 158, b - 22, 164, b - 12]
   );
 }
 
-/* Prado suave justo bajo los volcanes, para que el suelo no se corte. */
-function pradoLejos() {
-  const y = HOR + 4;
-  rectMundo(-80, y, 380, 150, 29);
-  rectMundo(-80, y, 380, 8, 30);
+/* Prado ancho. Sale del marco; las franjas solo miden la distancia. */
+function pradera() {
+  const yA = HOR;
+  const yB = 300;
+  const corte = [0, 0.2, 0.46, 0.74, 1];
+  const tapa = [23, 24, 25, 7];
+  const fre = [29, 23, 24, 23];
+  for (let f = 0; f < 4; f++) {
+    const y0 = yA + (yB - yA) * corte[f];
+    const y1 = yA + (yB - yA) * corte[f + 1];
+    const lip = Math.max(2, (y1 - y0) * 0.16);
+    rectMundo(-60, y0, 300, y1 - y0, tapa[f]);
+    rectMundo(-60, y1 - lip, 300, lip, fre[f]);
+  }
 }
 
-/* Mata quieta: masa redonda y unas hojas curvas que salen de ella. */
-function mataPasto(wx, base, esc, fila, nHojas, sombra, clara, brillo) {
+/* Mechón corto: la sombra queda quieta y el viento dobla la masa. */
+function mechon(wx, wy, esc, frente) {
   const z = cam.z;
-  const rx = 5.2 + esc * 2.2;
-  const ry = 3.3 + esc * 1.4;
-  const y = base - ry * 0.15;
-  if (fila === 2) {
-    elipse(camX(wx), camY(base + 4), rx * z + 1, (ry + 6) * z + 1, 0);
-    elipse(camX(wx), camY(base + 4), rx * z, (ry + 6) * z, sombra);
-  }
-  elipse(camX(wx), camY(y), rx * z + 1, ry * z + 1, 0);
-  elipse(camX(wx), camY(y), rx * z, ry * z, sombra);
-  elipse(camX(wx - rx * 0.22), camY(y - ry * 0.28), rx * 0.5 * z, ry * 0.44 * z, clara);
-  const doblez = viento(wx, fila);
-  const boca = y - ry * 0.2;
-  const ancho = 1.4 + esc * 0.8;
-  const largo = 8 + esc * 10;
-  hojaCurva(wx - rx * 0.06, boca, largo, ancho, doblez, sombra, clara, brillo);
-  if (nHojas > 1) {
-    hojaCurva(wx + rx * 0.32, boca + 1, largo * 0.72, ancho * 0.84, doblez * 0.82, sombra, clara, brillo);
-  }
-  if (nHojas > 2) {
-    hojaCurva(wx - rx * 0.36, boca + 2, largo * 0.56, ancho * 0.76, doblez * 0.7, sombra, clara, brillo);
+  const doblez = Math.max(-2.6, Math.min(2.6, viento(wx, frente ? 2 : 0)));
+  const rx = 3.6 + esc * 8;
+  const ry = rx * 0.46;
+  elipse(camX(wx + rx * 0.22), camY(wy + 1.2), rx * 0.82 * z, Math.max(1.1, ry * 0.28) * z, frente ? 23 : 29);
+  const x = camX(wx + doblez);
+  const y = camY(wy - ry * 0.7);
+  ovalo(x, y, rx * z, ry * z, 0, frente ? 7 : 23, 0);
+  ovalo(x - rx * 0.16 * z, y - ry * 0.18 * z, rx * 0.58 * z, ry * 0.58 * z, 0, frente ? 6 : 24, -1);
+  if (frente && hash16(wx * 3 | 0, 4) > 0.55) {
+    ovalo(x - rx * 0.26 * z, y - ry * 0.3 * z, rx * 0.2 * z, ry * 0.2 * z, 0, 8, -1);
   }
 }
 
-/* Filas fijas. Atrás baja y oscura; adelante alta y clara. */
-function filaPasto(base, espacio, esc, fila, nHojas, sombra, clara, brillo) {
-  cada(0, espacio, function (x, id) {
-    const escI = esc * (0.9 + hash16(id, fila + 4) * 0.2);
-    const xh = x + (hash16(id, fila + 8) - 0.5) * espacio * 0.22;
-    mataPasto(xh, base, escI, fila, nHojas, sombra, clara, brillo);
-  });
+/* Abajo pocos y grandes; arriba chicos y con huecos. No es una cuadrícula. */
+function semilla(x, sal) {
+  let n = Math.imul(((x + 512) ^ (sal * 374761393)) | 0, 0x85ebca6b);
+  n = Math.imul(n ^ (n >>> 13), 0xc2b2ae35);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
 }
 
-/* Dos marrones y unas piedras. Queda debajo de la franja de adelante. */
+function sembrar(y, esc, paso, fila, frente) {
+  let x = -36 + semilla(fila, 2) * paso;
+  for (let n = 0; x < 214 && n < 36; n++) {
+    const a = semilla(x | 0, fila * 9 + 1);
+    const b = semilla(x | 0, fila * 9 + 2);
+    const c = semilla(x | 0, fila * 9 + 3);
+    if (a > 0.2) {
+      const e = esc * (0.58 + b * 0.85);
+      const jy = (c - 0.5) * (7 + esc * 12);
+      mechon(x, y + jy, e, frente);
+    }
+    x += paso * (0.5 + a * 0.95);
+  }
+}
+
+/* Dos marrones y unas piedras, al borde de abajo. */
 function tierra() {
-  const y = 286;
-  rectMundo(-80, y, 380, 40, 32);
-  rectMundo(-80, y, 380, 7, 31);
-  rectMundo(-80, y, 380, 1 / cam.z, 0);
+  const y = 300;
+  rectMundo(-60, y, 300, 22, 32);
+  rectMundo(-60, y, 300, 5, 31);
+  rectMundo(-60, y, 300, 1 / cam.z, 0);
   cada(0, 26, function (x, id) {
     if (hash16(id, 11) < 0.34) return;
     const rx = 1.5 + hash16(id, 2) * 1.1;
     const ry = rx * 0.62;
     const px0 = x + (hash16(id, 6) - 0.5) * 8;
-    const py = y + 5 + hash16(id, 4) * 5;
+    const py = y + 8 + hash16(id, 4) * 6;
     const z = cam.z;
     elipse(camX(px0), camY(py), rx * z + 0.7, ry * z + 0.55, 0);
     elipse(camX(px0), camY(py), rx * z, ry * z, 9);
@@ -1019,12 +1031,13 @@ function escena(v) {
   nubesCerca();
   pajaros();
   volcanes();
-  pradoLejos();
-  filaPasto(250, 18, 0.72, 0, 2, 23, 24, 24);
+  pradera();
+  sembrar(150, 0.32, 16, 0, 0);
+  sembrar(186, 0.52, 24, 1, 0);
   for (let i = 0; i < patos.length; i++) {
     if (patos[i].estado === "cae") dibujarPato(patos[i]);
   }
-  filaPasto(276, 16, 1, 1, 2, 7, 24, 25);
+  sembrar(230, 0.78, 32, 2, 0);
   arbolAlto();
   arbusto();
   for (let i = 0; i < patos.length; i++) {
@@ -1033,7 +1046,7 @@ function escena(v) {
   }
   dibujarPlumas();
   tierra();
-  filaPasto(310, 15, 1.28, 2, 3, 7, 6, 8);
+  sembrar(286, 1.12, 44, 3, 1);
   patoLejos(v.e);
 }
 
